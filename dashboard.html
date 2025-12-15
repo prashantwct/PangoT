@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pangolin Mission Control</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; }
+        
+        /* HEADER */
+        .header { background: #2c3e50; color: white; padding: 10px 15px; display: flex; align-items: center; gap: 15px; flex-wrap: wrap;}
+        .header h2 { margin: 0; font-size: 1.1rem; flex-grow: 1; min-width: 150px; }
+        
+        /* FILTER BAR */
+        .filter-bar { background: #34495e; padding: 8px 15px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+        .filter-item { display: flex; align-items: center; gap: 5px; }
+        .filter-item label { color: #bdc3c7; font-size: 0.8rem; font-weight: bold; }
+        select, input[type="date"] { padding: 5px; border-radius: 4px; border: none; font-size: 0.9rem; background: #ecf0f1; }
+        .btn-clear { background: transparent; color: #bdc3c7; border: 1px solid #7f8c8d; cursor: pointer; color: white; }
+        .btn-clear:hover { background: rgba(255,255,255,0.1); }
+
+        /* LAYOUT */
+        .content { flex: 1; display: flex; position: relative; }
+        #map { flex: 2; height: 100%; }
+        .sidebar { flex: 1; background: #f8f9fa; border-left: 1px solid #ddd; overflow-y: auto; padding: 10px; max-width: 400px; }
+        
+        /* CARDS */
+        .fix-card { background: white; padding: 10px; margin-bottom: 10px; border-radius: 8px; border-left: 5px solid #2ecc71; box-shadow: 0 1px 3px rgba(0,0,0,0.1); transition: 0.2s; }
+        .fix-card:hover { background: #f1f8e9; }
+        .fix-card.active { border: 2px solid #2ecc71; background: #e8f5e9; }
+        .card-actions { margin-top: 10px; display: none; gap: 5px; border-top: 1px solid #eee; padding-top: 8px; }
+        .fix-card.active .card-actions { display: flex; }
+        
+        /* BUTTONS */
+        .btn { padding: 5px 10px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8rem; font-weight: bold; }
+        .btn-del { background: #e74c3c; color: white; }
+        .btn-edit { background: #f39c12; color: white; }
+        .btn-zoom { background: #3498db; color: white; }
+        .btn-nav { text-decoration: none; color: white; background: rgba(255,255,255,0.2); padding: 8px 12px; border-radius: 4px; font-weight: bold; font-size: 0.9rem; }
+        .btn-nav:hover { background: rgba(255,255,255,0.3); }
+        .btn-download { background: #e67e22; }
+
+        @media (max-width: 768px) { .content { flex-direction: column; } .sidebar { max-height: 40vh; } }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <a href="/" class="btn-nav">← Back</a>
+        <h2>🔭 Mission Control</h2>
+        <a href="/download_fixes" class="btn-nav btn-download">📂 CSV</a>
+    </div>
+
+    <div class="filter-bar">
+        <div class="filter-item">
+            <label>Animal:</label>
+            <select id="filt_pango" onchange="applyFilters()"><option value="all">All</option></select>
+        </div>
+        <div class="filter-item">
+            <label>User:</label>
+            <select id="filt_user" onchange="applyFilters()"><option value="all">All</option></select>
+        </div>
+        <div class="filter-item">
+            <label>Date:</label>
+            <input type="date" id="filt_date" onchange="applyFilters()">
+        </div>
+        <button class="btn btn-clear" onclick="clearFilters()">Clear</button>
+        <span id="record_count" style="color:white; font-size:0.8rem; margin-left:auto;">Loading...</span>
+    </div>
+    
+    <div class="content">
+        <div id="map"></div>
+        <div class="sidebar" id="sidebar"><h3>Recent Fixes</h3><div id="fix_list">Loading...</div></div>
+    </div>
+    
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // --- MAP CONFIG ---
+        // Your Mapbox Token is inserted here:
+        const MAPBOX_TOKEN = "pk.eyJ1Ijoid2N0dGVsZW1ldHJ5IiwiYSI6ImNtaXN0NnY5YjBkMnIzZ3F4aGl5cjdhem4ifQ.Yc3j-JDZ24vxSBq1n7jAsw"; 
+        
+        const map = L.map('map').setView([20.0, 78.0], 5);
+        
+        // 1. Street Map (OSM)
+        const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap'
+        });
+
+        // 2. Mapbox Satellite (High Res)
+        const satellite = L.tileLayer('https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/{z}/{x}/{y}?access_token=' + MAPBOX_TOKEN, {
+            attribution: '© Mapbox',
+            tileSize: 512,
+            zoomOffset: -1,
+            maxZoom: 20
+        });
+
+        // Add Satellite by default
+        satellite.addTo(map);
+
+        // Add Layer Control (Top Right)
+        const baseMaps = {
+            "Mapbox Satellite": satellite,
+            "Street Map": osm
+        };
+        L.control.layers(baseMaps).addTo(map);
+
+        // --- ICONS ---
+        const pangoIcon = L.divIcon({
+            className: 'pango-icon',
+            html: '<div style="background:red; width:12px; height:12px; border-radius:50%; border:2px solid white; box-shadow:0 0 5px black;"></div>',
+            iconSize: [16, 16]
+        });
+
+        // --- GLOBAL DATA STORE ---
+        let globalData = { raw: [], fixes: [] };
+
+        // --- INIT ---
+        loadData();
+
+        function loadData() {
+            fetch('/api/data?t=' + new Date().getTime())
+            .then(r => r.json())
+            .then(data => {
+                globalData = data;
+                populateFilterOptions();
+                applyFilters(); 
+            });
+        }
+
+        // --- FILTER LOGIC ---
+        function populateFilterOptions() {
+            const pangoSet = new Set();
+            const userSet = new Set();
+            globalData.raw.forEach(r => { if(r.pango_id) pangoSet.add(r.pango_id); if(r.observer) userSet.add(r.observer); });
+            globalData.fixes.forEach(f => { if(f.pango_id) pangoSet.add(f.pango_id); });
+
+            const pSel = document.getElementById('filt_pango');
+            const uSel = document.getElementById('filt_user');
+            
+            while (pSel.options.length > 1) pSel.remove(1);
+            while (uSel.options.length > 1) uSel.remove(1);
+
+            Array.from(pangoSet).sort().forEach(p => { if(p) pSel.add(new Option(p, p)); });
+            Array.from(userSet).sort().forEach(u => { if(u) uSel.add(new Option(u, u)); });
+        }
+
+        function applyFilters() {
+            const fPango = document.getElementById('filt_pango').value;
+            const fUser = document.getElementById('filt_user').value;
+            const fDate = document.getElementById('filt_date').value;
+
+            const filteredRaw = globalData.raw.filter(r => {
+                let match = true;
+                if(fPango !== "all" && r.pango_id !== fPango) match = false;
+                if(fUser !== "all" && r.observer !== fUser) match = false;
+                if(fDate && !r.timestamp.startsWith(fDate)) match = false;
+                return match;
+            });
+
+            const validGroups = new Set(filteredRaw.map(r => r.group_id));
+
+            const filteredFixes = globalData.fixes.filter(f => {
+                let match = true;
+                if(fPango !== "all" && f.pango_id !== fPango) match = false;
+                if(fDate && !f.timestamp.startsWith(fDate)) match = false;
+                if(fUser !== "all" && !validGroups.has(f.group_id)) match = false;
+                return match;
+            });
+
+            renderMap({ raw: filteredRaw, fixes: filteredFixes });
+        }
+
+        function clearFilters() {
+            document.getElementById('filt_pango').value = "all";
+            document.getElementById('filt_user').value = "all";
+            document.getElementById('filt_date').value = "";
+            applyFilters();
+        }
+
+        // --- RENDER LOGIC ---
+        function renderMap(data) {
+            const list = document.getElementById('fix_list'); 
+            list.innerHTML = "";
+            document.getElementById('record_count').innerText = `${data.fixes.length} Fixes | ${data.raw.length} Readings`;
+            
+            // Clear Layers (Keep tiles, remove data)
+            map.eachLayer(layer => {
+                if (layer instanceof L.Marker || layer instanceof L.Polyline || layer instanceof L.CircleMarker) {
+                    map.removeLayer(layer);
+                }
+            });
+
+            // Draw Raw Lines (Cyan)
+            data.raw.forEach(r => {
+                const lat = parseFloat(r.obs_lat), lon = parseFloat(r.obs_lon), brng = parseFloat(r.bearing);
+                const end = project(lat, lon, brng, 2);
+                L.polyline([[lat, lon], end], {color:'#00ffff', weight:1, dashArray:'5,5', opacity:0.6}).addTo(map);
+                L.circleMarker([lat, lon], {radius:4, color:'#00ffff', fillOpacity:0.6}).addTo(map).bindPopup(`Obs: ${r.observer}<br>Acc: ${r.gps_accuracy||0}m`);
+            });
+
+            // Draw Fixes
+            if(data.fixes.length){
+                const group = new L.featureGroup();
+                data.fixes.forEach(f => {
+                    const m = L.marker([f.calc_lat, f.calc_lon], {icon: pangoIcon})
+                        .addTo(map)
+                        .bindPopup(`<b>${f.pango_id}</b><br>${f.timestamp}`);
+                    group.addLayer(m);
+                    
+                    const card = document.createElement('div'); 
+                    card.className = 'fix-card';
+                    card.innerHTML = `
+                        <div onclick="toggleCard(this, ${f.calc_lat}, ${f.calc_lon})">
+                            <b>${f.pango_id}</b> <span style="font-size:0.8em; color:#777;">${f.group_id}</span><br>
+                            <small>${f.timestamp.substring(0,16)}</small><br>
+                            ${f.calc_lat.toFixed(5)}, ${f.calc_lon.toFixed(5)}<br>
+                            <i>${f.note || ''}</i>
+                        </div>
+                        <div class="card-actions">
+                            <button class="btn btn-zoom" onclick="zoomTo(${f.calc_lat}, ${f.calc_lon})">Zoom</button>
+                            <button class="btn btn-edit" onclick="editFix(${f.id}, '${f.pango_id}', '${f.note||''}')">Edit</button>
+                            <button class="btn btn-del" onclick="deleteFix(${f.id})">Delete</button>
+                        </div>
+                    `;
+                    list.appendChild(card);
+                });
+                map.fitBounds(group.getBounds(), {padding:[50,50]});
+            } else { 
+                list.innerHTML = "<p style='color:#777; padding:10px;'>No matching records.</p>"; 
+            }
+        }
+
+        // --- ACTIONS ---
+        function toggleCard(div, lat, lon) {
+            document.querySelectorAll('.fix-card').forEach(c => c.classList.remove('active'));
+            div.parentElement.classList.add('active');
+            zoomTo(lat, lon);
+        }
+
+        function zoomTo(lat, lon) { map.flyTo([lat, lon], 16); }
+
+        async function deleteFix(id) {
+            if(!confirm("Delete this fix permanently?")) return;
+            await fetch('/api/delete_fix/' + id, {method: 'DELETE'});
+            loadData();
+        }
+
+        async function editFix(id, oldId, oldNote) {
+            const newId = prompt("Pangolin ID:", oldId); if(newId===null) return;
+            const newNote = prompt("Note:", oldNote); if(newNote===null) return;
+            await fetch('/api/update_fix/' + id, {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({pango_id: newId, note: newNote})
+            });
+            loadData();
+        }
+
+        function project(lat,lon,brng,d){
+            const R=6371, rLat=lat*Math.PI/180, rLon=lon*Math.PI/180, rBrng=brng*Math.PI/180;
+            const lat2 = Math.asin(Math.sin(rLat)*Math.cos(d/R) + Math.cos(rLat)*Math.sin(d/R)*Math.cos(rBrng));
+            const lon2 = rLon + Math.atan2(Math.sin(rBrng)*Math.sin(d/R)*Math.cos(rLat), Math.cos(d/R)-Math.sin(rLat)*Math.sin(lat2));
+            return [lat2*180/Math.PI, lon2*180/Math.PI];
+        }
+    </script>
+</body>
+</html>

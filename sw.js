@@ -1,12 +1,12 @@
-const CACHE_NAME = 'pango-v2-static'; // Bump version when you change code
-const TILE_CACHE = 'pango-v2-tiles';
+const CACHE_NAME = 'pango-v3-static';
+const TILE_CACHE = 'pango-v3-tiles';
+
+// Core assets to keep the app running offline
 const ASSETS = [
   '/',
-  '/static/manifest.json', // Ensure this path matches your flask setup, or just use manifest.json if at root
   '/manifest.json',
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
-  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
-  '/static/icon.png' // Make sure you actually have an icon or remove this
+  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
 ];
 
 // 1. INSTALL: Cache static app shell (HTML, CSS, JS)
@@ -14,15 +14,16 @@ self.addEventListener('install', (e) => {
   e.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS))
   );
-  self.skipWaiting(); // Activate new SW immediately
+  self.skipWaiting(); // Force this new SW to become active immediately
 });
 
-// 2. ACTIVATE: Clean up old caches
+// 2. ACTIVATE: Clean up old caches from previous versions
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
         keys.map((key) => {
+          // Delete old caches that don't match the current version
           if (key !== CACHE_NAME && key !== TILE_CACHE) {
             return caches.delete(key);
           }
@@ -33,16 +34,16 @@ self.addEventListener('activate', (e) => {
   self.clients.claim();
 });
 
-// 3. FETCH: The Core Offline Logic
+// 3. FETCH: The Offline Logic
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
 
-  // A. Handle Map Tiles (OpenStreetMap or Mapbox)
+  // A. Dynamic Caching for Map Tiles (Save maps as you view them)
   if (url.href.includes('tile.openstreetmap.org') || url.href.includes('api.mapbox.com/styles')) {
     e.respondWith(
       caches.open(TILE_CACHE).then((cache) => {
         return cache.match(e.request).then((cachedResponse) => {
-          // Return cached tile if available, else fetch from net and cache it
+          // Return cached tile if available, else fetch from network and cache it
           const fetchPromise = fetch(e.request).then((networkResponse) => {
             cache.put(e.request, networkResponse.clone());
             return networkResponse;
@@ -51,16 +52,16 @@ self.addEventListener('fetch', (e) => {
         });
       })
     );
-    return; // Exit, handled
+    return;
   }
 
-  // B. Handle API Calls (Do not cache /sync or /save)
+  // B. Network Only for API calls (Never cache /sync or /save requests)
   if (url.pathname.startsWith('/api') || url.pathname.startsWith('/sync')) {
     e.respondWith(fetch(e.request));
     return;
   }
 
-  // C. Handle Static Assets (HTML, JS, CSS) -> Cache First, Fallback to Network
+  // C. Cache First for everything else (HTML, JS, CSS)
   e.respondWith(
     caches.match(e.request).then((response) => {
       return response || fetch(e.request);

@@ -1,0 +1,15 @@
+{
+  "name": "Pangolin Tracker",
+  "short_name": "PangoTrack",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#2c3e50",
+  "theme_color": "#2ecc71",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/2313/2313454.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}

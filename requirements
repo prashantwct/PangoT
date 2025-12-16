@@ -1,0 +1,9 @@
+Flask.env
+python-dotenv
+pyproj
+gunicorn         # Recommended for running the app in a production environment
+Flask-Migrate
+Flask-SQLAlchemy
+Flask-WTF
+numpy
+psycopg2-binary  # Required for the PostgreSQL connection defined in 

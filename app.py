@@ -17,10 +17,16 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# Use the DATABASE_URL environment variable, falling back to SQLite for local dev
+# Use the DATABASE_URL environment variable
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///pangolin_data.db') 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-key-fallback')
+
+# ADD THESE THREE LINES TO PREVENT SSL CONNECTION ERRORS:
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    "pool_recycle": 280,   # Refreshes connection every 280 seconds
+    "pool_pre_ping": True, # Checks if connection is alive before using it
+}
 
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
@@ -339,4 +345,5 @@ if __name__ == '__main__':
         # This will create tables if running against SQLite, or is skipped if tables exist on Neon
         db.create_all()
         
+
     app.run(host='0.0.0.0', port=5000, debug=True)

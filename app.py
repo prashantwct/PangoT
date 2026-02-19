@@ -340,10 +340,8 @@ def download_fixes():
     return create_csv_response(results, header, "pangolin_final_locations.csv")
 
 if __name__ == '__main__':
-    # Context must be pushed to allow SQLAlchemy to interact with app config outside a request
     with app.app_context():
-        # This will create tables if running against SQLite, or is skipped if tables exist on Neon
         db.create_all()
-        
-
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Use the PORT environment variable provided by Render, default to 5000 for local dev
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)

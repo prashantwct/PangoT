@@ -37,7 +37,7 @@
             position: absolute; top: 0; left: 0; width: 220px; height: 220px;
             will-change: transform;
             transform-origin: center center;
-            /* NO CSS transition — we drive animation ourselves via rAF for butter-smooth interpolation */
+            /* NO css transition — rAF drives it with unbounded angle to avoid 360/0 flip */
         }
     </style>
 </head>
@@ -49,9 +49,7 @@
 </div>
 
 <div id="tab-track" class="page active">
-    <button onclick="confirmNewSession()" class="btn btn-outline" style="margin-bottom:15px;margin-top:0;">
-        ➕ Start New Triangulation
-    </button>
+    <button onclick="confirmNewSession()" class="btn btn-outline" style="margin-bottom:15px;margin-top:0;">➕ Start New Triangulation</button>
 
     <div id="session_log_card" class="card" style="display:none;background:#e8f5e9;border:1px solid #c3e6cb;">
         <div style="font-size:0.85rem;color:#155724;font-weight:bold;margin-bottom:5px;">SESSION HISTORY</div>
@@ -75,37 +73,25 @@
         <div id="gps_status" style="text-align:center;color:#666;font-size:0.8rem;margin-top:5px;"></div>
     </div>
 
-    <!-- BEARING CARD -->
     <div class="card">
         <h3>3. Bearing</h3>
 
         <div id="compass-container" style="display:none;">
             <div style="position:relative;width:220px;height:220px;margin:0 auto 14px auto;">
-
-                <!-- Rotating rose (CSS-transformed div, drawn once on canvas inside) -->
                 <div id="compass-rose-wrap">
                     <canvas id="compass-canvas" width="220" height="220" style="border-radius:50%;"></canvas>
                 </div>
-
-                <!-- Fixed overlay: cardinal letters + needle + lock line -->
                 <svg width="220" height="220" style="position:absolute;top:0;left:0;pointer-events:none;">
-                    <!-- Cardinal labels stay fixed -->
-                    <text x="110" y="16" text-anchor="middle" fill="#c0392b" font-weight="bold" font-size="14" font-family="-apple-system,sans-serif">N</text>
-                    <text x="204" y="115" text-anchor="middle" fill="#555" font-weight="bold" font-size="13" font-family="-apple-system,sans-serif">E</text>
-                    <text x="110" y="213" text-anchor="middle" fill="#555" font-weight="bold" font-size="13" font-family="-apple-system,sans-serif">S</text>
-                    <text x="16"  y="115" text-anchor="middle" fill="#555" font-weight="bold" font-size="13" font-family="-apple-system,sans-serif">W</text>
-                    <!-- Fixed needle pointing up (always north when rose is aligned) -->
-                    <polygon points="110,32 104,110 116,110" fill="#c0392b" opacity="0.93"/>
+                    <text x="110" y="16"  text-anchor="middle" fill="#c0392b" font-weight="bold" font-size="14" font-family="-apple-system,sans-serif">N</text>
+                    <text x="204" y="115" text-anchor="middle" fill="#555"    font-weight="bold" font-size="13" font-family="-apple-system,sans-serif">E</text>
+                    <text x="110" y="213" text-anchor="middle" fill="#555"    font-weight="bold" font-size="13" font-family="-apple-system,sans-serif">S</text>
+                    <text x="16"  y="115" text-anchor="middle" fill="#555"    font-weight="bold" font-size="13" font-family="-apple-system,sans-serif">W</text>
+                    <polygon points="110,32 104,110 116,110"  fill="#c0392b" opacity="0.93"/>
                     <polygon points="110,188 104,110 116,110" fill="#bdc3c7" opacity="0.85"/>
-                    <!-- Locked bearing line (rotated by JS on lock) -->
-                    <line id="bearing-line" x1="110" y1="110" x2="110" y2="28"
-                        stroke="#2ecc71" stroke-width="3" stroke-dasharray="7,5" opacity="0"/>
-                    <!-- Center pin -->
-                    <circle cx="110" cy="110" r="8" fill="#2c3e50"/>
+                    <line id="bearing-line" x1="110" y1="110" x2="110" y2="28" stroke="#2ecc71" stroke-width="3" stroke-dasharray="7,5" opacity="0"/>
+                    <circle cx="110" cy="110" r="8"   fill="#2c3e50"/>
                     <circle cx="110" cy="110" r="3.5" fill="white"/>
                 </svg>
-
-                <!-- Degree readout -->
                 <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,calc(-50% + 28px));text-align:center;pointer-events:none;">
                     <div id="live-bearing-display" style="font-size:2.2rem;font-weight:900;color:#2c3e50;line-height:1;font-variant-numeric:tabular-nums;">---</div>
                     <div style="font-size:0.65rem;color:#888;letter-spacing:2px;margin-top:2px;">DEGREES</div>
@@ -116,29 +102,21 @@
                 style="width:100%;padding:14px;background:#2ecc71;color:white;border:none;border-radius:10px;font-size:1.05rem;font-weight:bold;cursor:pointer;">
                 🔒 Lock This Bearing
             </button>
-
             <div id="locked-display" style="display:none;margin-top:10px;padding:10px 14px;background:#e8f5e9;border-radius:8px;border-left:4px solid #2ecc71;align-items:center;justify-content:space-between;">
                 <span style="color:#155724;font-weight:bold;">✅ Locked: <span id="locked-val">--</span>°</span>
                 <button onclick="unlockBearing()" style="background:none;border:1px solid #aaa;border-radius:5px;padding:3px 9px;font-size:0.8rem;color:#666;cursor:pointer;">Reset</button>
             </div>
-
             <div id="compass-error" style="display:none;padding:10px;background:#fff3cd;border-radius:8px;margin-top:8px;font-size:0.85rem;color:#856404;">
                 ⚠️ Compass not available. Use manual entry below.
             </div>
-
-            <button onclick="stopCompass()" style="width:100%;margin-top:8px;padding:8px;background:none;border:1px solid #ddd;border-radius:8px;font-size:0.85rem;color:#888;cursor:pointer;">
-                ✕ Close Compass
-            </button>
+            <button onclick="stopCompass()" style="width:100%;margin-top:8px;padding:8px;background:none;border:1px solid #ddd;border-radius:8px;font-size:0.85rem;color:#888;cursor:pointer;">✕ Close Compass</button>
         </div>
 
         <div id="manual-bearing-wrap">
             <div id="manual-label" style="font-size:0.8rem;color:#999;margin-bottom:6px;display:none;">Or enter manually:</div>
             <input type="number" id="bearing" placeholder="0 – 360" min="0" max="360">
         </div>
-
-        <button id="start-compass-btn" onclick="startCompass()" class="btn btn-blue" style="margin-top:10px;">
-            🧭 Use Live Compass
-        </button>
+        <button id="start-compass-btn" onclick="startCompass()" class="btn btn-blue" style="margin-top:10px;">🧭 Use Live Compass</button>
     </div>
 
     <button onclick="saveData()" class="btn btn-primary">SAVE READING</button>
@@ -178,45 +156,33 @@ let selectedAnimal = null;
 let sessionId = localStorage.getItem('session_id');
 
 window.onload = function() {
-    if(localStorage.getItem('observer_initials'))
-        document.getElementById('observer_initials').value = localStorage.getItem('observer_initials');
-    if(localStorage.getItem('my_animals'))
-        animals = JSON.parse(localStorage.getItem('my_animals'));
+    if(localStorage.getItem('observer_initials')) document.getElementById('observer_initials').value = localStorage.getItem('observer_initials');
+    if(localStorage.getItem('my_animals')) animals = JSON.parse(localStorage.getItem('my_animals'));
     renderAnimals(); updatePendingCount(); renderSessionLog();
-    if(!sessionId) forceNewSession(true);
-    else document.getElementById('group_display').innerText = sessionId;
-    fetch('/get_animals').then(r=>r.json()).then(d=>{
-        if(d.length){ animals=d; localStorage.setItem('my_animals',JSON.stringify(animals)); renderAnimals(); }
-    }).catch(()=>{});
+    if(!sessionId) forceNewSession(true); else document.getElementById('group_display').innerText = sessionId;
+    fetch('/get_animals').then(r=>r.json()).then(d=>{ if(d.length){ animals=d; localStorage.setItem('my_animals',JSON.stringify(animals)); renderAnimals(); } }).catch(()=>{});
 };
-
 function saveInitials(){ localStorage.setItem('observer_initials', document.getElementById('observer_initials').value.toUpperCase()); }
 function switchTab(t,el){ document.querySelectorAll('.page').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active')); document.getElementById('tab-'+t).classList.add('active'); el.classList.add('active'); }
-
 function renderAnimals(){
-    const g=document.getElementById('pango_grid'), l=document.getElementById('animal_list_view');
-    g.innerHTML=''; l.innerHTML='';
+    const g=document.getElementById('pango_grid'), l=document.getElementById('animal_list_view'); g.innerHTML=''; l.innerHTML='';
     animals.forEach(id=>{
         let b=document.createElement('div'); b.className='pango-item'; b.innerText=id;
         if(selectedAnimal===id) b.classList.add('selected');
         b.onclick=()=>{ selectedAnimal=id; document.querySelectorAll('.pango-item').forEach(x=>x.classList.remove('selected')); b.classList.add('selected'); document.getElementById('selected_display').innerText=id; };
-        g.appendChild(b);
-        let li=document.createElement('li'); li.innerText=id; l.appendChild(li);
+        g.appendChild(b); let li=document.createElement('li'); li.innerText=id; l.appendChild(li);
     });
 }
 function addAnimal(){
     const id=document.getElementById('new_animal_id').value.trim(); if(!id) return;
     if(!animals.includes(id)){ animals.push(id); localStorage.setItem('my_animals',JSON.stringify(animals)); renderAnimals(); fetch('/add_animal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})}).catch(()=>{}); }
 }
-function confirmNewSession(){
-    if(confirm("Start a new triangulation session?\n\nOnly do this if tracking a NEW animal or moving to a completely new location.")) forceNewSession();
-}
+function confirmNewSession(){ if(confirm("Start a new triangulation session?\n\nOnly do this if tracking a NEW animal or moving to a completely new location.")) forceNewSession(); }
 function forceNewSession(skipAlert=false){
     const d=new Date(), str=`${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
     let seq=parseInt(localStorage.getItem('session_sequence')||"0");
-    if(!skipAlert){
-        if(localStorage.getItem('last_session_date')!==str){ seq=1; localStorage.setItem('last_session_date',str); } else seq+=1;
-    } else { if(!sessionId) seq+=1; }
+    if(!skipAlert){ if(localStorage.getItem('last_session_date')!==str){ seq=1; localStorage.setItem('last_session_date',str); } else seq+=1; }
+    else { if(!sessionId) seq+=1; }
     localStorage.setItem('session_sequence',seq);
     sessionId=`Fix_${str}_${String(seq).padStart(2,'0')}`;
     localStorage.setItem('session_id',sessionId);
@@ -229,8 +195,7 @@ function getGPS(){
     navigator.geolocation.getCurrentPosition(p=>{
         document.getElementById('manual_lat').value=p.coords.latitude.toFixed(6);
         document.getElementById('manual_lon').value=p.coords.longitude.toFixed(6);
-        let acc=Math.round(p.coords.accuracy);
-        document.getElementById('gps_accuracy_val').value=acc;
+        let acc=Math.round(p.coords.accuracy); document.getElementById('gps_accuracy_val').value=acc;
         document.getElementById('gps_status').innerText="✅ Accuracy: "+acc+"m";
     }, e=>{ document.getElementById('gps_status').innerText="Error: "+e.message; });
 }
@@ -243,13 +208,11 @@ function saveData(){
     let q=JSON.parse(localStorage.getItem('sync_queue')||"[]"); q.push(rec); localStorage.setItem('sync_queue',JSON.stringify(q));
     document.getElementById('save_msg').innerText=`✅ Saved! (${q.length} pending)`; document.getElementById('save_msg').style.display="block";
     document.getElementById('bearing').value=""; document.getElementById('gps_accuracy_val').value="0"; document.getElementById('gps_status').innerText="";
-    document.getElementById('locked-display').style.display='none';
-    document.getElementById('bearing-line').style.opacity='0';
+    document.getElementById('locked-display').style.display='none'; document.getElementById('bearing-line').style.opacity='0';
     updatePendingCount(); renderSessionLog();
 }
 function renderSessionLog(){
-    let queue=JSON.parse(localStorage.getItem('sync_queue')||"[]");
-    let items=queue.filter(i=>i.group_id===sessionId);
+    let items=JSON.parse(localStorage.getItem('sync_queue')||"[]").filter(i=>i.group_id===sessionId);
     const listDiv=document.getElementById('session_log_list'), card=document.getElementById('session_log_card');
     if(items.length>0){
         card.style.display='block'; listDiv.innerHTML='';
@@ -273,113 +236,86 @@ async function syncToServer(){
 
 // ── COMPASS ENGINE ───────────────────────────────────────
 //
-// Key insight from Kr0oked/Compass: use TYPE_ROTATION_VECTOR which fuses
-// gyroscope + accelerometer + magnetometer via Kalman filter in the OS.
+// THE FIX FOR FLICKERING:
+// CSS transform rotate() flickers at the 0/360 boundary because the browser
+// sees e.g. rotate(-359deg) → rotate(0deg) and animates the long way around.
 //
-// In the browser we can't access rotation vector directly, BUT on modern
-// Android/iOS the `deviceorientation` event with `absolute:true` already
-// delivers OS-fused heading (not raw magnetometer). The trick is:
-//   1. Use `deviceorientationabsolute` (Android) or `webkitCompassHeading` (iOS)
-//   2. Apply our own complementary filter (gyro-style lerp) on top
-//   3. Drive the visual via requestAnimationFrame, NOT inside the sensor callback
-//   4. Rotate the ROSE div (not redraw canvas) — pure GPU transform
-//
-// The canvas rose is drawn ONCE and never touched again.
+// Solution: track `renderAngle` as an UNBOUNDED cumulative value (e.g. -721.5)
+// and NEVER reset it mod 360. We only use shortAngleDiff() to compute the 
+// smallest step toward the target, then ADD that step to the running total.
+// The CSS transform gets this unbounded value directly — no wrapping ever occurs.
 
 let compassListenerAdded = false;
-let currentHeading = null;     // latest sensor-fused heading (raw from OS)
-let renderHeading  = null;     // what we're currently showing (interpolated)
-let rafId = null;
-let lastFrameTime = null;
+let sensorHeading  = null;   // raw heading from OS sensor (0–360), updated by events
+let renderAngle    = null;   // UNBOUNDED cumulative angle for CSS transform (never mod 360)
+let rafId          = null;
+let lastFrameTime  = null;
+const DEG_PER_SEC  = 120;    // max visual rotation speed (deg/sec)
 
-// Complementary filter constant — how fast renderHeading chases currentHeading
-// Higher = snappier but may jitter. Lower = smoother but laggy.
-// 8 deg/sec interpolation speed feels natural for field use.
-const DEG_PER_SEC = 120;  // max rotation speed of visual, degrees per second
-
+// Returns shortest signed difference from → to, in range [-180, +180]
 function shortAngleDiff(from, to) {
-    let diff = ((to - from + 540) % 360) - 180;
-    return diff;
+    return ((to - from % 360 + 540) % 360) - 180;
 }
 
-// Draw the static compass rose once — no heading involvement
 function drawRose(canvas) {
-    const ctx = canvas.getContext('2d');
-    const W = canvas.width, cx = W/2, r = W/2 - 3;
-    ctx.clearRect(0, 0, W, W);
-
-    // Outer ring gradient
-    const g = ctx.createRadialGradient(cx,cx,r*0.25,cx,cx,r);
+    const ctx=canvas.getContext('2d'), W=canvas.width, cx=W/2, r=W/2-3;
+    ctx.clearRect(0,0,W,W);
+    const g=ctx.createRadialGradient(cx,cx,r*0.25,cx,cx,r);
     g.addColorStop(0,'#f8f9fa'); g.addColorStop(1,'#dee2e6');
-    ctx.beginPath(); ctx.arc(cx,cx,r,0,Math.PI*2);
-    ctx.fillStyle=g; ctx.fill();
+    ctx.beginPath(); ctx.arc(cx,cx,r,0,Math.PI*2); ctx.fillStyle=g; ctx.fill();
     ctx.strokeStyle='#adb5bd'; ctx.lineWidth=2; ctx.stroke();
-
-    // Tick every 5°, long every 30°, medium every 10°
-    for(let deg=0; deg<360; deg+=5){
-        const rad=(deg-90)*Math.PI/180;
-        const isLong=deg%30===0, isMed=deg%10===0;
-        const len = isLong?16: isMed?10:5;
+    for(let deg=0;deg<360;deg+=5){
+        const rad=(deg-90)*Math.PI/180, isLong=deg%30===0, isMed=deg%10===0;
+        const len=isLong?16:isMed?10:5;
         ctx.beginPath();
-        ctx.moveTo(cx+Math.cos(rad)*(r-3), cx+Math.sin(rad)*(r-3));
-        ctx.lineTo(cx+Math.cos(rad)*(r-3-len), cx+Math.sin(rad)*(r-3-len));
-        ctx.strokeStyle = isLong?'#343a40': isMed?'#6c757d':'#ced4da';
-        ctx.lineWidth = isLong?2.5: isMed?1.5:1;
-        ctx.stroke();
+        ctx.moveTo(cx+Math.cos(rad)*(r-3),   cx+Math.sin(rad)*(r-3));
+        ctx.lineTo(cx+Math.cos(rad)*(r-3-len),cx+Math.sin(rad)*(r-3-len));
+        ctx.strokeStyle=isLong?'#343a40':isMed?'#6c757d':'#ced4da';
+        ctx.lineWidth=isLong?2.5:isMed?1.5:1; ctx.stroke();
     }
-
-    // Degree labels every 30°
     ['0','30','60','90','120','150','180','210','240','270','300','330'].forEach((lbl,i)=>{
         const deg=i*30, rad=(deg-90)*Math.PI/180;
-        const lx=cx+Math.cos(rad)*(r-30), ly=cx+Math.sin(rad)*(r-30);
-        ctx.save();
-        ctx.translate(lx,ly);
+        ctx.save(); ctx.translate(cx+Math.cos(rad)*(r-30), cx+Math.sin(rad)*(r-30));
         ctx.font=`bold ${deg%90===0?14:11}px -apple-system,sans-serif`;
         ctx.fillStyle=deg===0?'#c0392b':'#495057';
-        ctx.textAlign='center'; ctx.textBaseline='middle';
-        ctx.fillText(lbl,0,0);
-        ctx.restore();
+        ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(lbl,0,0); ctx.restore();
     });
 }
 
-// rAF render loop: smoothly interpolates renderHeading toward currentHeading
 function renderLoop(timestamp) {
-    if(!compassListenerAdded) return;
+    if (!compassListenerAdded) return;
     rafId = requestAnimationFrame(renderLoop);
+    if (sensorHeading === null) return;
 
-    if(currentHeading === null) return;
-
-    if(renderHeading === null) {
-        renderHeading = currentHeading;
-    } else if(lastFrameTime !== null) {
-        const dt = Math.min((timestamp - lastFrameTime) / 1000, 0.1); // seconds, capped at 100ms
-        const diff = shortAngleDiff(renderHeading, currentHeading);
+    if (renderAngle === null) {
+        // First frame: initialise to sensor heading so rose starts at correct position
+        renderAngle = sensorHeading;
+    } else if (lastFrameTime !== null) {
+        const dt   = Math.min((timestamp - lastFrameTime) / 1000, 0.05); // cap at 50ms
+        // shortAngleDiff works on the modular values but we ADD the result to unbounded renderAngle
+        const diff = shortAngleDiff(renderAngle, sensorHeading);
         const maxStep = DEG_PER_SEC * dt;
-        // Clamp step so it never overshoots
-        const step = Math.max(-maxStep, Math.min(maxStep, diff));
-        renderHeading = (renderHeading + step + 360) % 360;
+        renderAngle += Math.max(-maxStep, Math.min(maxStep, diff));
+        // No modulo — renderAngle grows/shrinks freely (e.g. -721.3, 1085.7...)
+        // This is the key: CSS rotate(-721.3deg) never wraps visually
     }
     lastFrameTime = timestamp;
 
-    // Rotate the rose DIV (GPU-accelerated, zero canvas work)
-    document.getElementById('compass-rose-wrap').style.transform = `rotate(${-renderHeading}deg)`;
-    document.getElementById('live-bearing-display').textContent = String(Math.round(renderHeading)).padStart(3,'0');
+    document.getElementById('compass-rose-wrap').style.transform = `rotate(${-renderAngle}deg)`;
+    // Display heading is always 0-360
+    document.getElementById('live-bearing-display').textContent =
+        String(((Math.round(renderAngle) % 360) + 360) % 360).padStart(3,'0');
 }
 
 function onOrientationEvent(e) {
     let raw = null;
-
-    // iOS: webkitCompassHeading is already OS-fused (Core Motion)
-    if(typeof e.webkitCompassHeading === 'number' && isFinite(e.webkitCompassHeading)) {
-        raw = e.webkitCompassHeading;
+    if (typeof e.webkitCompassHeading === 'number' && isFinite(e.webkitCompassHeading)) {
+        raw = e.webkitCompassHeading;                    // iOS — Core Motion fused
+    } else if (e.alpha !== null && isFinite(e.alpha)) {
+        raw = (360 - e.alpha) % 360;                    // Android absolute
     }
-    // Android absolute: alpha is degrees from north, we invert
-    else if(e.isTrusted && e.alpha !== null && isFinite(e.alpha)) {
-        raw = (360 - e.alpha) % 360;
-    }
-
-    if(raw === null) return;
-    currentHeading = raw;   // just store; rendering happens in rAF loop
+    if (raw === null) return;
+    sensorHeading = raw;
     document.getElementById('compass-error').style.display = 'none';
 }
 
@@ -389,30 +325,23 @@ async function startCompass() {
     document.getElementById('manual-label').style.display = 'block';
     document.getElementById('bearing').placeholder = 'Or type manually';
 
-    // Draw static rose once
     drawRose(document.getElementById('compass-canvas'));
 
-    currentHeading = null;
-    renderHeading  = null;
-    lastFrameTime  = null;
+    sensorHeading = null; renderAngle = null; lastFrameTime = null;
 
     const attach = () => {
-        // `deviceorientationabsolute` fires only on Android with fusion
         window.addEventListener('deviceorientationabsolute', onOrientationEvent, true);
-        // `deviceorientation` as fallback (iOS uses this with webkitCompassHeading)
-        window.addEventListener('deviceorientation', onOrientationEvent, true);
+        window.addEventListener('deviceorientation',         onOrientationEvent, true);
         compassListenerAdded = true;
         rafId = requestAnimationFrame(renderLoop);
-        // If nothing arrives in 3s, show error
-        setTimeout(()=>{ if(currentHeading===null) document.getElementById('compass-error').style.display='block'; }, 3000);
+        setTimeout(()=>{ if(sensorHeading===null) document.getElementById('compass-error').style.display='block'; }, 3000);
     };
 
-    if(typeof DeviceOrientationEvent !== 'undefined' &&
-       typeof DeviceOrientationEvent.requestPermission === 'function') {
-        // iOS 13+ permission required
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
         try {
             const p = await DeviceOrientationEvent.requestPermission();
-            if(p === 'granted') attach();
+            if (p === 'granted') attach();
             else document.getElementById('compass-error').style.display = 'block';
         } catch(err) { document.getElementById('compass-error').style.display = 'block'; }
     } else {
@@ -421,13 +350,13 @@ async function startCompass() {
 }
 
 function stopCompass() {
-    if(rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    if(compassListenerAdded) {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    if (compassListenerAdded) {
         window.removeEventListener('deviceorientationabsolute', onOrientationEvent, true);
-        window.removeEventListener('deviceorientation', onOrientationEvent, true);
+        window.removeEventListener('deviceorientation',         onOrientationEvent, true);
         compassListenerAdded = false;
     }
-    currentHeading = null; renderHeading = null; lastFrameTime = null;
+    sensorHeading = null; renderAngle = null; lastFrameTime = null;
     document.getElementById('compass-rose-wrap').style.transform = 'rotate(0deg)';
     document.getElementById('compass-container').style.display = 'none';
     document.getElementById('start-compass-btn').style.display = 'block';
@@ -438,17 +367,15 @@ function stopCompass() {
 }
 
 function lockBearing() {
-    if(renderHeading === null) { alert('Compass not ready yet. Wait a moment.'); return; }
-    const locked = Math.round(renderHeading);
+    if (renderAngle === null) { alert('Compass not ready yet. Wait a moment.'); return; }
+    const locked = ((Math.round(renderAngle) % 360) + 360) % 360;
     document.getElementById('bearing').value = locked;
     document.getElementById('locked-val').textContent = locked;
     document.getElementById('locked-display').style.display = 'flex';
-    // Show the locked bearing line rotated to the correct angle
-    const line = document.getElementById('bearing-line');
-    line.style.opacity = '1';
-    line.setAttribute('transform', `rotate(${locked},110,110)`);
+    document.getElementById('bearing-line').style.opacity = '1';
+    document.getElementById('bearing-line').setAttribute('transform', `rotate(${locked},110,110)`);
     const btn = document.getElementById('lock-btn');
-    btn.style.background = '#27ae60'; btn.textContent = '✅ Bearing Locked!';
+    btn.style.background='#27ae60'; btn.textContent='✅ Bearing Locked!';
     setTimeout(()=>{ btn.style.background='#2ecc71'; btn.textContent='🔒 Lock This Bearing'; }, 1500);
 }
 

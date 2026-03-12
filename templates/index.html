@@ -294,6 +294,10 @@
         let compassActive = false;
         let currentHeading = null;
         let compassListenerAdded = false;
+        let headingBuffer = [];
+        const SMOOTH_SAMPLES = 10; // rolling average over last N readings
+        let lastDrawnHeading = null;
+        let rafPending = false;
 
         function drawCompassRose(canvas, rotationDeg) {
             const ctx = canvas.getContext('2d');
@@ -351,19 +355,42 @@
             ctx.restore();
         }
 
+        function circularMean(angles) {
+            // Proper average for circular data (handles 359/1 wraparound correctly)
+            let sinSum = 0, cosSum = 0;
+            angles.forEach(a => { const r = a * Math.PI / 180; sinSum += Math.sin(r); cosSum += Math.cos(r); });
+            return ((Math.atan2(sinSum / angles.length, cosSum / angles.length) * 180 / Math.PI) + 360) % 360;
+        }
+
         function onDeviceOrientation(e) {
-            let heading = null;
+            let raw = null;
             if (e.webkitCompassHeading !== undefined && e.webkitCompassHeading !== null) {
-                heading = e.webkitCompassHeading; // iOS
+                raw = e.webkitCompassHeading; // iOS
             } else if (e.alpha !== null) {
-                heading = (360 - e.alpha) % 360; // Android
+                raw = (360 - e.alpha) % 360; // Android
             }
-            if (heading !== null) {
-                currentHeading = Math.round(heading);
-                drawCompassRose(document.getElementById('compass-canvas'), heading);
-                document.getElementById('live-bearing-display').textContent = String(currentHeading).padStart(3,'0');
-                document.getElementById('compass-error').style.display = 'none';
+            if (raw === null) return;
+
+            // Rolling buffer for smoothing
+            headingBuffer.push(raw);
+            if (headingBuffer.length > SMOOTH_SAMPLES) headingBuffer.shift();
+            const smoothed = circularMean(headingBuffer);
+            currentHeading = Math.round(smoothed);
+
+            // Throttle redraws to animation frames — prevents jitter flooding canvas
+            if (!rafPending) {
+                rafPending = true;
+                requestAnimationFrame(() => {
+                    rafPending = false;
+                    // Only redraw if heading moved >= 1 degree
+                    if (lastDrawnHeading === null || Math.abs(smoothed - lastDrawnHeading) >= 1) {
+                        lastDrawnHeading = smoothed;
+                        drawCompassRose(document.getElementById('compass-canvas'), smoothed);
+                        document.getElementById('live-bearing-display').textContent = String(currentHeading).padStart(3,'0');
+                    }
+                });
             }
+            document.getElementById('compass-error').style.display = 'none';
         }
 
         async function startCompass() {
@@ -372,6 +399,8 @@
             document.getElementById('manual-label').style.display = 'block';
             document.getElementById('bearing').placeholder = 'Or type manually';
             drawCompassRose(document.getElementById('compass-canvas'), 0);
+            headingBuffer = [];
+            lastDrawnHeading = null;
 
             if (typeof DeviceOrientationEvent !== 'undefined' &&
                 typeof DeviceOrientationEvent.requestPermission === 'function') {
@@ -407,6 +436,9 @@
             }
             compassActive = false;
             currentHeading = null;
+            headingBuffer = [];
+            lastDrawnHeading = null;
+            rafPending = false;
             document.getElementById('compass-container').style.display = 'none';
             document.getElementById('start-compass-btn').style.display = 'block';
             document.getElementById('manual-label').style.display = 'none';

@@ -3,10 +3,8 @@
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0">
     <title>Pangolin Track</title>
-    
-    <link rel="manifest" href="/manifest.json">
     <meta name="theme-color" content="#2ecc71">
-    <script>if ('serviceWorker' in navigator) {navigator.serviceWorker.register('/sw.js');}</script>
+    <!-- NO service worker registration - was caching old version -->
 
     <style>
         body { font-family: -apple-system, sans-serif; background: #f0f2f5; margin: 0; padding-bottom: 80px; }
@@ -48,11 +46,7 @@
     </div>
 
     <div id="tab-track" class="page active">
-        
-        <button onclick="confirmNewSession()" 
-                class="btn btn-outline" 
-                style="margin-bottom:15px; margin-top:0;" 
-                title="Click here if you are tracking a new animal or moving to a new location.">
+        <button onclick="confirmNewSession()" class="btn btn-outline" style="margin-bottom:15px; margin-top:0;" title="Click here if you are tracking a new animal or moving to a new location.">
             ➕ Start New Triangulation
         </button>
 
@@ -66,38 +60,37 @@
             <div id="pango_grid" class="pango-grid"></div>
             <div id="selected_display" style="text-align:right; color:#2ecc71; font-weight:bold; margin-top:5px;">None</div>
         </div>
+
         <div class="card">
             <h3>2. Location</h3>
             <input type="hidden" id="gps_accuracy_val" value="0">
-            <div style="display:flex; gap:10px;"><input type="number" id="manual_lat" placeholder="Lat"><input type="number" id="manual_lon" placeholder="Lon"></div>
+            <div style="display:flex; gap:10px;">
+                <input type="number" id="manual_lat" placeholder="Lat">
+                <input type="number" id="manual_lon" placeholder="Lon">
+            </div>
             <button onclick="getGPS()" class="btn btn-blue" style="padding:10px;">📍 Auto-Fill GPS</button>
             <div id="gps_status" style="text-align:center; color:#666; font-size:0.8rem; margin-top:5px;"></div>
         </div>
+
+        <!-- ── BEARING CARD ── -->
         <div class="card" id="bearing-card">
             <h3>3. Bearing</h3>
 
-            <!-- Live Compass UI (shown after tapping button) -->
+            <!-- Live Compass (hidden until user taps button) -->
             <div id="compass-container" style="display:none;">
                 <div style="position:relative; width:220px; height:220px; margin:0 auto 14px auto;">
-                    <!-- Compass canvas (rotating rose) -->
                     <canvas id="compass-canvas" width="220" height="220"
                         style="position:absolute;top:0;left:0;border-radius:50%;"></canvas>
-                    <!-- Fixed overlay: needles + bearing line -->
                     <svg width="220" height="220" style="position:absolute;top:0;left:0;pointer-events:none;">
-                        <!-- South needle (white) -->
                         <polygon points="110,185 104,110 116,110" fill="#bdc3c7" opacity="0.85"/>
-                        <!-- North needle (red) -->
                         <polygon points="110,35 104,110 116,110" fill="#c0392b" opacity="0.93"/>
-                        <!-- Locked bearing line (green dashed) -->
                         <line id="bearing-line" x1="110" y1="110" x2="110" y2="28"
                             stroke="#2ecc71" stroke-width="3" stroke-dasharray="7,5"
                             opacity="0" style="transition:opacity 0.3s;"
                             transform-origin="110px 110px"/>
-                        <!-- Center pin -->
                         <circle cx="110" cy="110" r="8" fill="#2c3e50"/>
                         <circle cx="110" cy="110" r="3.5" fill="white"/>
                     </svg>
-                    <!-- Live degree readout in center -->
                     <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,calc(-50% + 28px));text-align:center;pointer-events:none;">
                         <div id="live-bearing-display" style="font-size:2.2rem;font-weight:900;color:#2c3e50;line-height:1;font-variant-numeric:tabular-nums;text-shadow:0 1px 3px rgba(255,255,255,0.9);">---</div>
                         <div style="font-size:0.65rem;color:#888;letter-spacing:2px;margin-top:2px;">DEGREES</div>
@@ -123,17 +116,17 @@
                 </button>
             </div>
 
-            <!-- Manual entry fallback -->
+            <!-- Manual entry (always visible) -->
             <div id="manual-bearing-wrap">
                 <div id="manual-label" style="font-size:0.8rem;color:#999;margin-bottom:6px;display:none;">Or enter manually:</div>
                 <input type="number" id="bearing" placeholder="0 – 360" min="0" max="360">
             </div>
 
-            <!-- Initial trigger button -->
             <button id="start-compass-btn" onclick="startCompass()" class="btn btn-blue" style="margin-top:10px;">
                 🧭 Use Live Compass
             </button>
         </div>
+
         <button onclick="saveData()" class="btn btn-primary">SAVE READING</button>
         <div id="save_msg" class="status-msg"></div>
     </div>
@@ -173,25 +166,27 @@
             if(localStorage.getItem('observer_initials')) document.getElementById('observer_initials').value = localStorage.getItem('observer_initials');
             if(localStorage.getItem('my_animals')) animals = JSON.parse(localStorage.getItem('my_animals'));
             renderAnimals(); updatePendingCount(); renderSessionLog();
-            if(!sessionId) forceNewSession(true); else document.getElementById('group_display').innerText = sessionId; 
+            if(!sessionId) forceNewSession(true); else document.getElementById('group_display').innerText = sessionId;
+            // Try fetching animals from server (only works when Flask is running)
             fetch('/get_animals').then(r=>r.json()).then(d=>{if(d.length){animals=d; localStorage.setItem('my_animals', JSON.stringify(animals)); renderAnimals();}}).catch(e=>{});
         }
-        
+
         function saveInitials(){ localStorage.setItem('observer_initials', document.getElementById('observer_initials').value.toUpperCase()); }
         function switchTab(t,el){ document.querySelectorAll('.page').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active')); document.getElementById('tab-'+t).classList.add('active'); el.classList.add('active'); }
-        
-        function renderAnimals(){ 
+
+        function renderAnimals(){
             const g=document.getElementById('pango_grid'); const l=document.getElementById('animal_list_view'); g.innerHTML=''; l.innerHTML='';
             animals.forEach(id=>{
-                let b=document.createElement('div'); b.className='pango-item'; b.innerText=id; 
+                let b=document.createElement('div'); b.className='pango-item'; b.innerText=id;
                 if(selectedAnimal===id) b.classList.add('selected');
                 b.onclick=()=>{selectedAnimal=id; document.querySelectorAll('.pango-item').forEach(x=>x.classList.remove('selected')); b.classList.add('selected'); document.getElementById('selected_display').innerText=id;}
                 g.appendChild(b);
                 let li=document.createElement('li'); li.innerText=id; l.appendChild(li);
             });
         }
-        function addAnimal(){ 
-            const id=document.getElementById('new_animal_id').value.trim(); if(!id)return; 
+
+        function addAnimal(){
+            const id=document.getElementById('new_animal_id').value.trim(); if(!id)return;
             if(!animals.includes(id)){ animals.push(id); localStorage.setItem('my_animals', JSON.stringify(animals)); renderAnimals(); fetch('/add_animal', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:id})}).catch(e=>{}); }
         }
 
@@ -201,33 +196,33 @@
             }
         }
 
-        function forceNewSession(skipAlert=false){ 
+        function forceNewSession(skipAlert=false){
             const d = new Date(); const str = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
             let seq = parseInt(localStorage.getItem('session_sequence')||"0");
             if(!skipAlert) {
                 if(localStorage.getItem('last_session_date')!==str){ seq=1; localStorage.setItem('last_session_date', str); } else { seq+=1; }
             } else {
-                 if(!sessionId) seq+=1; 
+                if(!sessionId) seq+=1;
             }
             localStorage.setItem('session_sequence', seq);
-            sessionId=`Fix_${str}_${String(seq).padStart(2,'0')}`; 
+            sessionId=`Fix_${str}_${String(seq).padStart(2,'0')}`;
             localStorage.setItem('session_id', sessionId);
-            document.getElementById('group_display').innerText=sessionId; 
-            renderSessionLog(); 
+            document.getElementById('group_display').innerText=sessionId;
+            renderSessionLog();
             if(!skipAlert) alert("New Session Started: "+sessionId);
         }
-        
-        function getGPS(){ 
-            document.getElementById('gps_status').innerText="Locating..."; 
+
+        function getGPS(){
+            document.getElementById('gps_status').innerText="Locating...";
             navigator.geolocation.getCurrentPosition(p=>{
-                document.getElementById('manual_lat').value=p.coords.latitude.toFixed(6); 
+                document.getElementById('manual_lat').value=p.coords.latitude.toFixed(6);
                 document.getElementById('manual_lon').value=p.coords.longitude.toFixed(6);
                 let acc = Math.round(p.coords.accuracy);
                 document.getElementById('gps_accuracy_val').value = acc;
                 document.getElementById('gps_status').innerText="✅ Accuracy: " + acc + "m";
-            }, e=>{document.getElementById('gps_status').innerText="Error: "+e.message});
+            }, e=>{document.getElementById('gps_status').innerText="Error: "+e.message;});
         }
-        
+
         function saveData(){
             const lat=document.getElementById('manual_lat').value;
             const lon=document.getElementById('manual_lon').value;
@@ -236,30 +231,28 @@
             const acc=document.getElementById('gps_accuracy_val').value;
 
             if(!init || !selectedAnimal || !lat || !lon || !brg) { document.getElementById('save_msg').innerText="⚠️ Missing Fields!"; document.getElementById('save_msg').style.display="block"; return; }
-            
+
             const rec={
-                group_id:sessionId, 
-                pango_id:selectedAnimal, 
-                observer:init.toUpperCase(), 
-                lat:parseFloat(lat), 
-                lon:parseFloat(lon), 
-                bearing:parseFloat(brg), 
+                group_id:sessionId,
+                pango_id:selectedAnimal,
+                observer:init.toUpperCase(),
+                lat:parseFloat(lat),
+                lon:parseFloat(lon),
+                bearing:parseFloat(brg),
                 accuracy: parseInt(acc) || 0,
                 time:new Date().toISOString()
             };
-            
+
             let q=JSON.parse(localStorage.getItem('sync_queue')||"[]"); q.push(rec); localStorage.setItem('sync_queue', JSON.stringify(q));
-            
             document.getElementById('save_msg').innerText=`✅ Saved! (${q.length} pending)`; document.getElementById('save_msg').style.display="block";
-            document.getElementById('bearing').value=""; 
-            document.getElementById('gps_accuracy_val').value = "0"; 
+            document.getElementById('bearing').value="";
+            document.getElementById('gps_accuracy_val').value = "0";
             document.getElementById('gps_status').innerText="";
             // Reset compass lock
             document.getElementById('locked-display').style.display = 'none';
             document.getElementById('bearing-line').style.opacity = '0';
-
             updatePendingCount();
-            renderSessionLog(); 
+            renderSessionLog();
         }
 
         function renderSessionLog() {
@@ -267,7 +260,6 @@
             let currentItems = queue.filter(item => item.group_id === sessionId);
             const listDiv = document.getElementById('session_log_list');
             const card = document.getElementById('session_log_card');
-            
             if (currentItems.length > 0) {
                 card.style.display = 'block';
                 listDiv.innerHTML = '';
@@ -276,7 +268,7 @@
                     let div = document.createElement('div');
                     div.className = 'history-item';
                     div.innerHTML = `
-                        <span class="history-label">#${index+1}</span> 
+                        <span class="history-label">#${index+1}</span>
                         <span>${item.lat.toFixed(4)}, ${item.lon.toFixed(4)} <span class="acc-tag">${accText}</span></span>
                         <span style="font-weight:bold; color:#d35400;">${item.bearing}°</span>
                     `;
@@ -286,45 +278,45 @@
         }
 
         function updatePendingCount(){ document.getElementById('pending_count').innerText = JSON.parse(localStorage.getItem('sync_queue')||"[]").length; }
-        
+
         async function syncToServer(){
             let q=JSON.parse(localStorage.getItem('sync_queue')||"[]"); if(!q.length)return;
             document.getElementById('sync_log').style.display='block'; document.getElementById('sync_log').innerText="Syncing...";
             try{
                 const r=await fetch('/sync', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(q)});
                 if(r.ok){ const d=await r.json(); localStorage.removeItem('sync_queue'); updatePendingCount(); renderSessionLog(); document.getElementById('sync_log').innerHTML="<b>Sync Complete!</b><br>"+d.messages.join('<br>'); }
-            }catch(e){ document.getElementById('sync_log').innerText="Sync Failed"; }
+            }catch(e){ document.getElementById('sync_log').innerText="Sync Failed (not connected to server)"; }
         }
 
-        // ─── COMPASS ──────────────────────────────────────────────────────────
+        // ══════════════════════════════════════════
+        //  LIVE COMPASS
+        // ══════════════════════════════════════════
         let compassActive = false;
         let currentHeading = null;
-        let compassAnimFrame = null;
         let compassListenerAdded = false;
 
         function drawCompassRose(canvas, rotationDeg) {
             const ctx = canvas.getContext('2d');
             const W = canvas.width, H = canvas.height;
-            const cx = W / 2, cy = H / 2, r = W / 2 - 4;
+            const cx = W/2, cy = H/2, r = W/2 - 4;
             ctx.clearRect(0, 0, W, H);
-
             ctx.save();
             ctx.translate(cx, cy);
             ctx.rotate(-rotationDeg * Math.PI / 180);
 
-            // Background circle
-            const grad = ctx.createRadialGradient(0, 0, r * 0.3, 0, 0, r);
+            // Background
+            const grad = ctx.createRadialGradient(0, 0, r*0.3, 0, 0, r);
             grad.addColorStop(0, '#f8f9fa');
             grad.addColorStop(1, '#e9ecef');
             ctx.beginPath();
-            ctx.arc(0, 0, r, 0, Math.PI * 2);
+            ctx.arc(0, 0, r, 0, Math.PI*2);
             ctx.fillStyle = grad;
             ctx.fill();
             ctx.strokeStyle = '#ced4da';
             ctx.lineWidth = 2;
             ctx.stroke();
 
-            // Tick marks every 10°, major every 30°
+            // Tick marks
             for (let deg = 0; deg < 360; deg += 10) {
                 const rad = (deg - 90) * Math.PI / 180;
                 const isMajor = deg % 30 === 0;
@@ -333,24 +325,21 @@
                 const y1 = Math.sin(rad) * (r - 4);
                 const x2 = Math.cos(rad) * (r - 4 - tickLen);
                 const y2 = Math.sin(rad) * (r - 4 - tickLen);
-                ctx.beginPath();
-                ctx.moveTo(x1, y1);
-                ctx.lineTo(x2, y2);
+                ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
                 ctx.strokeStyle = isMajor ? '#495057' : '#adb5bd';
                 ctx.lineWidth = isMajor ? 2 : 1;
                 ctx.stroke();
             }
 
             // Degree labels every 30°
-            const degLabels = ['0','30','60','90','120','150','180','210','240','270','300','330'];
-            degLabels.forEach((lbl, i) => {
+            ['0','30','60','90','120','150','180','210','240','270','300','330'].forEach((lbl, i) => {
                 const deg = i * 30;
                 const rad = (deg - 90) * Math.PI / 180;
                 const lx = Math.cos(rad) * (r - 26);
                 const ly = Math.sin(rad) * (r - 26);
                 ctx.save();
                 ctx.translate(lx, ly);
-                ctx.rotate(rotationDeg * Math.PI / 180); // keep labels upright
+                ctx.rotate(rotationDeg * Math.PI / 180);
                 ctx.font = `bold ${deg % 90 === 0 ? 13 : 10}px -apple-system,sans-serif`;
                 ctx.fillStyle = deg === 0 ? '#c0392b' : '#495057';
                 ctx.textAlign = 'center';
@@ -362,27 +351,17 @@
             ctx.restore();
         }
 
-        function updateCompassDisplay(heading) {
-            currentHeading = Math.round(heading);
-            const canvas = document.getElementById('compass-canvas');
-            drawCompassRose(canvas, heading);
-            document.getElementById('live-bearing-display').textContent =
-                String(currentHeading).padStart(3, '0');
-        }
-
         function onDeviceOrientation(e) {
             let heading = null;
             if (e.webkitCompassHeading !== undefined && e.webkitCompassHeading !== null) {
-                // iOS
-                heading = e.webkitCompassHeading;
-            } else if (e.absolute && e.alpha !== null) {
-                // Android absolute
-                heading = (360 - e.alpha) % 360;
+                heading = e.webkitCompassHeading; // iOS
             } else if (e.alpha !== null) {
-                heading = (360 - e.alpha) % 360;
+                heading = (360 - e.alpha) % 360; // Android
             }
             if (heading !== null) {
-                updateCompassDisplay(heading);
+                currentHeading = Math.round(heading);
+                drawCompassRose(document.getElementById('compass-canvas'), heading);
+                document.getElementById('live-bearing-display').textContent = String(currentHeading).padStart(3,'0');
                 document.getElementById('compass-error').style.display = 'none';
             }
         }
@@ -392,32 +371,24 @@
             document.getElementById('compass-container').style.display = 'block';
             document.getElementById('manual-label').style.display = 'block';
             document.getElementById('bearing').placeholder = 'Or type manually';
+            drawCompassRose(document.getElementById('compass-canvas'), 0);
 
-            // Draw initial static rose
-            const canvas = document.getElementById('compass-canvas');
-            drawCompassRose(canvas, 0);
-
-            // iOS 13+ requires permission
             if (typeof DeviceOrientationEvent !== 'undefined' &&
                 typeof DeviceOrientationEvent.requestPermission === 'function') {
+                // iOS 13+ needs explicit permission
                 try {
                     const perm = await DeviceOrientationEvent.requestPermission();
                     if (perm === 'granted') {
                         window.addEventListener('deviceorientationabsolute', onDeviceOrientation, true);
                         window.addEventListener('deviceorientation', onDeviceOrientation, true);
                         compassListenerAdded = true;
-                    } else {
-                        showCompassError();
-                    }
-                } catch (err) { showCompassError(); }
+                    } else { showCompassError(); }
+                } catch(err) { showCompassError(); }
             } else if (typeof DeviceOrientationEvent !== 'undefined') {
                 window.addEventListener('deviceorientationabsolute', onDeviceOrientation, true);
                 window.addEventListener('deviceorientation', onDeviceOrientation, true);
                 compassListenerAdded = true;
-                // Show error if no data after 2.5s
-                setTimeout(() => {
-                    if (currentHeading === null) showCompassError();
-                }, 2500);
+                setTimeout(() => { if (currentHeading === null) showCompassError(); }, 2500);
             } else {
                 showCompassError();
             }
@@ -450,28 +421,15 @@
             }
             const locked = currentHeading;
             document.getElementById('bearing').value = locked;
-
-            // Show locked indicator
             document.getElementById('locked-val').textContent = locked;
-            const ld = document.getElementById('locked-display');
-            ld.style.display = 'flex';
-
-            // Rotate the green bearing line to the locked direction
+            document.getElementById('locked-display').style.display = 'flex';
             const line = document.getElementById('bearing-line');
             line.style.opacity = '1';
-            // bearing-line points up (north=0°). Rotate it by (locked - currentRoseDeg)
-            // Since the rose rotates by -heading and the line is in fixed SVG,
-            // we just rotate the line to point at `locked` degrees from north
             line.setAttribute('transform', `rotate(${locked}, 110, 110)`);
-
-            // Visual feedback on button
             const btn = document.getElementById('lock-btn');
             btn.style.background = '#27ae60';
             btn.textContent = '✅ Bearing Locked!';
-            setTimeout(() => {
-                btn.style.background = '#2ecc71';
-                btn.textContent = '🔒 Lock This Bearing';
-            }, 1500);
+            setTimeout(() => { btn.style.background = '#2ecc71'; btn.textContent = '🔒 Lock This Bearing'; }, 1500);
         }
 
         function unlockBearing() {
@@ -479,7 +437,7 @@
             document.getElementById('locked-display').style.display = 'none';
             document.getElementById('bearing-line').style.opacity = '0';
         }
-        // ─── END COMPASS ──────────────────────────────────────────────────────
+        // ══════════════════════════════════════════
     </script>
 </body>
 </html>

@@ -28,6 +28,7 @@
         .fix-card { background: white; padding: 10px; margin-bottom: 10px; border-radius: 8px; border-left: 5px solid #2ecc71; box-shadow: 0 1px 3px rgba(0,0,0,0.1); transition: 0.2s; }
         .fix-card:hover { background: #f1f8e9; }
         .fix-card.active { border: 2px solid #2ecc71; background: #e8f5e9; }
+        .fix-card.invalid { border-left-color: #95a5a6; background: #fafafa; opacity: 0.7; }
         .card-actions { margin-top: 10px; display: none; gap: 5px; border-top: 1px solid #eee; padding-top: 8px; }
         .fix-card.active .card-actions { display: flex; }
         
@@ -75,17 +76,14 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
         // --- MAP CONFIG ---
-        // Securely injected from Flask
         const MAPBOX_TOKEN = "{{ mapbox_token }}"; 
         
         const map = L.map('map').setView([20.0, 78.0], 5);
         
-        // 1. Street Map (OSM)
         const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap'
         });
 
-        // 2. Mapbox Satellite (High Res) - Only add if token exists
         let baseMaps = { "Street Map": osm };
         
         if(MAPBOX_TOKEN && MAPBOX_TOKEN !== 'None' && MAPBOX_TOKEN !== '') {
@@ -102,7 +100,6 @@
             console.warn("Mapbox Token missing. Defaulting to OSM.");
         }
 
-        // Add Layer Control
         L.control.layers(baseMaps).addTo(map);
 
         // --- ICONS ---
@@ -114,6 +111,15 @@
 
         // --- GLOBAL DATA STORE ---
         let globalData = { raw: [], fixes: [] };
+
+        // --- HELPERS ---
+        function isValidCoord(lat, lon) {
+            return lat !== null && lon !== null &&
+                   !isNaN(lat) && !isNaN(lon) &&
+                   isFinite(lat) && isFinite(lon) &&
+                   lat >= -90 && lat <= 90 &&
+                   lon >= -180 && lon <= 180;
+        }
 
         // --- INIT ---
         loadData();
@@ -186,7 +192,13 @@
         function renderMap(data) {
             const list = document.getElementById('fix_list'); 
             list.innerHTML = "";
-            document.getElementById('record_count').innerText = `${data.fixes.length} Fixes | ${data.raw.length} Readings`;
+
+            const validFixes   = data.fixes.filter(f => isValidCoord(f.calc_lat, f.calc_lon));
+            const invalidFixes = data.fixes.filter(f => !isValidCoord(f.calc_lat, f.calc_lon));
+
+            document.getElementById('record_count').innerText =
+                `${validFixes.length} Fixes | ${data.raw.length} Readings` +
+                (invalidFixes.length ? ` | ⚠️ ${invalidFixes.length} invalid` : '');
             
             // Clear Layers (Keep tiles, remove data)
             map.eachLayer(layer => {
@@ -198,57 +210,79 @@
             // Draw Raw Lines (Cyan)
             data.raw.forEach(r => {
                 const lat = parseFloat(r.obs_lat), lon = parseFloat(r.obs_lon), brng = parseFloat(r.bearing);
+                if (!isValidCoord(lat, lon)) return; // skip bad observer positions too
                 const end = project(lat, lon, brng, 2);
                 L.polyline([[lat, lon], end], {color:'#00ffff', weight:1, dashArray:'5,5', opacity:0.6}).addTo(map);
                 L.circleMarker([lat, lon], {radius:4, color:'#00ffff', fillOpacity:0.6}).addTo(map).bindPopup(`Obs: ${r.observer}<br>Acc: ${r.gps_accuracy||0}m`);
             });
 
-            // Draw Fixes
-            if(data.fixes.length){
+            // Draw valid fixes on map
+            if(validFixes.length){
                 const group = new L.featureGroup();
-                data.fixes.forEach(f => {
+                validFixes.forEach(f => {
                     const m = L.marker([f.calc_lat, f.calc_lon], {icon: pangoIcon})
                         .addTo(map)
                         .bindPopup(`<b>${f.pango_id}</b><br>${f.timestamp}<br><i>${f.note||''}</i>`);
                     group.addLayer(m);
-                    
-                    // --- COLOR CODE BASED ON ERROR ---
-                    let borderColor = "#2ecc71"; // Green (Good)
-                    let bgColor = "white";
-                    
-                    if(f.note && f.note.includes("Err:")) {
-                        const errVal = parseFloat(f.note.split("Err:")[1]);
-                        if(errVal > 10.0) { // Threshold: 10 meters error
-                            borderColor = "#f1c40f"; // Yellow (Warning)
-                            bgColor = "#fffcf5";
-                        }
-                    }
-                    // ---------------------------------
-
-                    const card = document.createElement('div'); 
-                    card.className = 'fix-card';
-                    card.style.borderLeftColor = borderColor;
-                    card.style.background = bgColor;
-                    
-                    card.innerHTML = `
-                        <div onclick="toggleCard(this, ${f.calc_lat}, ${f.calc_lon})">
-                            <b>${f.pango_id}</b> <span style="font-size:0.8em; color:#777;">${f.group_id}</span><br>
-                            <small>${f.timestamp.substring(0,16)}</small><br>
-                            ${f.calc_lat.toFixed(5)}, ${f.calc_lon.toFixed(5)}<br>
-                            <i style="color:${borderColor === '#f1c40f' ? '#d35400' : '#777'}">${f.note || ''}</i>
-                        </div>
-                        <div class="card-actions">
-                            <button class="btn btn-zoom" onclick="zoomTo(${f.calc_lat}, ${f.calc_lon})">Zoom</button>
-                            <button class="btn btn-edit" onclick="editFix(${f.id}, '${f.pango_id}', '${f.note||''}')">Edit</button>
-                            <button class="btn btn-del" onclick="deleteFix(${f.id})">Delete</button>
-                        </div>
-                    `;
-                    list.appendChild(card);
+                    list.appendChild(buildCard(f, true));
                 });
                 map.fitBounds(group.getBounds(), {padding:[50,50]});
-            } else { 
-                list.innerHTML = "<p style='color:#777; padding:10px;'>No matching records.</p>"; 
             }
+
+            // Show invalid fixes in sidebar (no map marker)
+            invalidFixes.forEach(f => list.appendChild(buildCard(f, false)));
+
+            if(!data.fixes.length) {
+                list.innerHTML = "<p style='color:#777; padding:10px;'>No matching records.</p>";
+            }
+        }
+
+        function buildCard(f, hasCoords) {
+            let borderColor = "#2ecc71";
+            let bgColor = "white";
+
+            if (!hasCoords) {
+                borderColor = "#95a5a6";
+                bgColor = "#fafafa";
+            } else if(f.note && f.note.includes("Err:")) {
+                const errVal = parseFloat(f.note.split("Err:")[1]);
+                if(errVal > 10.0) {
+                    borderColor = "#f1c40f";
+                    bgColor = "#fffcf5";
+                }
+            }
+
+            const card = document.createElement('div');
+            card.className = 'fix-card' + (hasCoords ? '' : ' invalid');
+            card.style.borderLeftColor = borderColor;
+            card.style.background = bgColor;
+
+            const coordsDisplay = hasCoords
+                ? `${f.calc_lat.toFixed(5)}, ${f.calc_lon.toFixed(5)}`
+                : `<span style="color:#e74c3c;">⚠️ Invalid coordinates</span>`;
+
+            const zoomBtn = hasCoords
+                ? `<button class="btn btn-zoom" onclick="zoomTo(${f.calc_lat}, ${f.calc_lon})">Zoom</button>`
+                : '';
+
+            const clickHandler = hasCoords
+                ? `onclick="toggleCard(this, ${f.calc_lat}, ${f.calc_lon})"`
+                : '';
+
+            card.innerHTML = `
+                <div ${clickHandler}>
+                    <b>${f.pango_id}</b> <span style="font-size:0.8em; color:#777;">${f.group_id}</span><br>
+                    <small>${f.timestamp.substring(0,16)}</small><br>
+                    ${coordsDisplay}<br>
+                    <i style="color:${borderColor === '#f1c40f' ? '#d35400' : '#777'}">${f.note || ''}</i>
+                </div>
+                <div class="card-actions">
+                    ${zoomBtn}
+                    <button class="btn btn-edit" onclick="editFix(${f.id}, '${f.pango_id}', '${f.note||''}')">Edit</button>
+                    <button class="btn btn-del" onclick="deleteFix(${f.id})">Delete</button>
+                </div>
+            `;
+            return card;
         }
 
         // --- ACTIONS ---

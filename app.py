@@ -1,3 +1,4 @@
+import math
 import os
 import json
 from flask import Flask, request, jsonify, render_template, Response, send_from_directory
@@ -70,9 +71,10 @@ def to_dict(model):
     data = {}
     for column in model.__table__.columns:
         value = getattr(model, column.name)
-        # Convert datetime objects to ISO format string for JSON
         if isinstance(value, datetime):
             data[column.name] = value.isoformat()
+        elif isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+            data[column.name] = None  # NaN/Inf are not valid JSON
         else:
             data[column.name] = value
     return data
@@ -228,7 +230,12 @@ def sync_data():
             
             if isinstance(res, tuple):
                 lat, lon, err = res
-                
+
+                # Guard against NaN/Inf coordinates from degenerate triangulation
+                if math.isnan(lat) or math.isnan(lon) or math.isinf(lat) or math.isinf(lon):
+                    results.append(f"⚠️ {gid}: Triangulation produced invalid coordinates (NaN/Inf) — fix skipped")
+                    continue
+
                 note = "Least Squares"
                 if len(readings_list) > 2:
                     note += f" (Err: {err:.1f}m)"

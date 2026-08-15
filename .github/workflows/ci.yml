@@ -91,6 +91,13 @@ jobs:
       - name: Scan tracked files
         run: python tools/check_secrets.py
 
+      # These two only ever run by hand, at moments where a syntax error would
+      # be discovered halfway through a history rewrite.
+      - name: Check the shell scripts parse
+        run: |
+          bash -n tools/purge_history.sh
+          bash -n .githooks/pre-commit
+
   javascript:
     name: JavaScript tests
     runs-on: ubuntu-latest

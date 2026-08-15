@@ -77,6 +77,20 @@ jobs:
           flask db downgrade base
           flask db upgrade
 
+  secrets:
+    name: No secrets committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # A tracked .env is how a live Postgres password, admin password and the
+      # pangolin location database ended up in this public repository. This
+      # fails the build rather than relying on anyone noticing.
+      - name: Scan tracked files
+        run: python tools/check_secrets.py
+
   javascript:
     name: JavaScript tests
     runs-on: ubuntu-latest

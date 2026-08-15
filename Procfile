@@ -1,4 +1,9 @@
-release: flask db upgrade
+# `flask deploy`, not `flask db upgrade`. A database created by an older
+# db.create_all() has no alembic_version, and plain `db upgrade` then tries to
+# CREATE TABLE over tables that already exist and fails — which is how a live
+# field team ended up on an un-migrated database. `deploy` detects that case and
+# stamps the baseline first. Safe and idempotent on every deploy.
+release: flask deploy
 # Threaded workers, not the sync default: /api/stream holds a connection open
 # for the life of each dashboard tab, and a sync worker can only serve one
 # request at a time. With --threads 8 a couple of workers comfortably carry the

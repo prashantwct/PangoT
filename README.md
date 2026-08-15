@@ -133,15 +133,30 @@ python -c "from werkzeug.security import generate_password_hash as h; print(h(in
 
 Set the result as `ADMIN_PASSWORD_HASH` and delete `ADMIN_PASSWORD`.
 
-### Upgrading a database created before migrations existed
-
-If the database was created by `db.create_all()` it has no `alembic_version`
-table. Stamp it at the initial revision once, then upgrade:
+### Migrating the database
 
 ```bash
-flask db stamp 273e298aa774
-flask db upgrade
+flask deploy
 ```
+
+This is the release command in the `Procfile`, and it is safe to run on any
+database in any state. It handles three cases:
+
+| State | What it does |
+|---|---|
+| Empty | Creates the schema from the migrations |
+| Already under Alembic | Upgrades to the newest revision |
+| Has tables but no `alembic_version` | Stamps the baseline, then upgrades |
+
+That last case is a database created by an older `db.create_all()`. Plain
+`flask db upgrade` fails on it — Alembic tries to `CREATE TABLE` over tables
+that already exist — and a deploy whose release step fails leaves the app
+running new code against the old schema. Uploads then fail with an opaque
+reference number and the animal list comes back empty.
+
+If that has already happened, `flask deploy` fixes it in place; no data is
+touched. `/healthz` reports the schema state, and returns 503 while it is
+wrong.
 
 ---
 

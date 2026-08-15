@@ -45,7 +45,13 @@ from config import Config
 from extensions import csrf, db, migrate
 from geodesy import to_true_bearing
 from models import Animal, CalculatedFix, RawBearing, User, to_dict, utcnow
-from schema import STALE_SCHEMA_MESSAGE, check as check_schema, log_startup_state, looks_like_stale_schema
+from schema import (
+    STALE_SCHEMA_MESSAGE,
+    check as check_schema,
+    log_startup_state,
+    looks_like_stale_schema,
+    plan_deploy,
+)
 from triangulation import Observation, TriangulationError, solve
 from validation import ValidationError, validate_animal_id, validate_batch
 
@@ -744,6 +750,41 @@ def _csv_response(rows, header, filename):
 def _register_cli(app):
     """`flask users ...` — account management without needing the web UI."""
     import click
+
+    @app.cli.command("deploy")
+    def deploy_command():
+        """Bring the database up to date, whatever state it is in.
+
+        Safe to run on every deploy. Replaces the manual `flask db stamp ...`
+        then `flask db upgrade` dance, which is easy to forget — and forgetting
+        it is what put a live field team on an un-migrated database, where
+        uploads failed with an opaque reference number.
+        """
+        from flask_migrate import stamp, upgrade
+
+        plan = plan_deploy(db.engine)
+
+        if plan["case"] == "adopt":
+            click.echo(
+                "Database has tables but no alembic_version — adopting it at "
+                f"baseline {plan['stamp']} before upgrading."
+            )
+            stamp(revision=plan["stamp"])
+        elif plan["case"] == "fresh":
+            click.echo("Empty database — creating the schema from the migrations.")
+        else:
+            click.echo(f"Database is at {plan['current']}.")
+
+        upgrade()
+
+        status = check_schema(db.engine)
+        if status["state"] == "ok":
+            click.echo(f"Schema is up to date at {status['current']}.")
+        else:
+            raise click.ClickException(
+                f"Schema is still {status['state']} after upgrading "
+                f"(at {status['current']}, expected {status['expected']})."
+            )
 
     @app.cli.group()
     def users():

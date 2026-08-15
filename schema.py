@@ -88,6 +88,41 @@ def check(engine, migrations_directory: str = "migrations") -> dict:
     return {"state": state, "current": actual, "expected": expected}
 
 
+# The first migration, which creates the original tables. A database that has
+# those tables but no alembic_version predates migrations and must be stamped
+# here before anything newer can apply.
+BASELINE_REVISION = "273e298aa774"
+
+# If this table exists, the database has real data in it.
+_SENTINEL_TABLE = "raw_bearings"
+
+
+def plan_deploy(engine, migrations_directory: str = "migrations") -> dict:
+    """Work out what a deploy needs to do to this database.
+
+    Three cases, and telling them apart is the whole point:
+
+    ``fresh``     no tables at all — a new database, so just run the migrations.
+    ``stamped``   already under Alembic's control — just run the migrations.
+    ``adopt``     has tables but no alembic_version — created by an older
+                  ``db.create_all()``. Stamping the baseline first is required,
+                  because otherwise Alembic tries to CREATE TABLE over tables
+                  that already exist and the whole deploy fails.
+
+    Getting this wrong in the ``fresh`` direction would be the dangerous one:
+    stamping an empty database would skip the migration that creates the
+    tables, leaving a schema with nothing in it. Hence the sentinel check.
+    """
+    revision = current_revision(engine)
+    if revision is not None:
+        return {"action": "upgrade", "case": "stamped", "current": revision}
+
+    has_tables = sa.inspect(engine).has_table(_SENTINEL_TABLE)
+    if has_tables:
+        return {"action": "stamp-then-upgrade", "case": "adopt", "stamp": BASELINE_REVISION}
+    return {"action": "upgrade", "case": "fresh", "current": None}
+
+
 def log_startup_state(app, engine) -> dict:
     """Report the schema state once at boot, loudly if it is wrong."""
     status = check(engine)

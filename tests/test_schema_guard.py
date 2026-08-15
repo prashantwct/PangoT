@@ -141,3 +141,46 @@ def test_healthz_names_the_expected_revision(client):
     """So an operator can compare it against what the database reports."""
     schema = client.get("/healthz").get_json()["schema"]
     assert "current" in schema and "expected" in schema
+
+
+# --- the deploy plan --------------------------------------------------------
+
+
+def test_deploy_adopts_a_database_that_predates_migrations(app):
+    """Tables but no alembic_version: stamp the baseline, then upgrade."""
+    from schema import BASELINE_REVISION, plan_deploy
+
+    plan = plan_deploy(db.engine)
+
+    assert plan["case"] == "adopt"
+    assert plan["action"] == "stamp-then-upgrade"
+    assert plan["stamp"] == BASELINE_REVISION
+
+
+def test_deploy_never_stamps_an_empty_database(app):
+    """The dangerous mistake: stamping an empty database would skip the
+    migration that creates the tables, leaving a schema with nothing in it."""
+    from schema import plan_deploy
+
+    db.session.remove()
+    db.drop_all()
+
+    plan = plan_deploy(db.engine)
+
+    assert plan["case"] == "fresh"
+    assert plan["action"] == "upgrade"
+    assert "stamp" not in plan
+
+
+def test_deploy_is_a_plain_upgrade_once_stamped(app):
+    from schema import plan_deploy
+
+    db.session.execute(db.text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+    db.session.execute(db.text("INSERT INTO alembic_version VALUES ('a1c47f2b9e30')"))
+    db.session.commit()
+
+    plan = plan_deploy(db.engine)
+
+    assert plan["case"] == "stamped"
+    assert plan["action"] == "upgrade"
+    assert plan["current"] == "a1c47f2b9e30"

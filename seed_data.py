@@ -1,81 +1,125 @@
-import sqlite3
+"""Generate realistic demo data for development.
+
+Rewritten to go through the ORM rather than a hardcoded ``sqlite3.connect``,
+so it works against whatever DATABASE_URL is configured — the previous version
+could not run against the deployed Postgres at all.
+
+    python seed_data.py            # 25 sessions, 2 observers each
+    python seed_data.py --sessions 60 --clear
+
+Never run this against production.
+"""
+import argparse
 import random
-import math
-from datetime import datetime, timedelta
+import uuid
 
-# --- CONFIGURATION ---
-CENTER_LAT = 19.0500
-CENTER_LON = 73.0500
-PANGOLINS = ["P01", "P02", "P03", "P04", "P05", "P06", "P07", "P08"]
-OBSERVERS = ["MK", "PD", "Rahul", "Team_A"]
+from app import create_app
+from extensions import db
+from geodesy import WGS84, bearing_between
+from models import Animal, CalculatedFix, RawBearing, utcnow
+from triangulation import Observation, TriangulationError, solve
 
-# --- HELPER: Calculate Bearing between two points ---
-def get_bearing(lat1, lon1, lat2, lon2):
-    dLon = (lon2 - lon1)
-    x = math.cos(math.radians(lat2)) * math.sin(math.radians(dLon))
-    y = math.cos(math.radians(lat1)) * math.sin(math.radians(lat2)) \
-        - math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.cos(math.radians(dLon))
-    brng = math.atan2(x,y)
-    brng = math.degrees(brng)
-    return (brng + 360) % 360
+SITE_LAT, SITE_LON = 19.0500, 73.0500
+ANIMALS = [f"P{i:02d}" for i in range(1, 9)]
+OBSERVERS = ["MK", "PD", "RA", "SN"]
 
-# --- HELPER: Generate a random point nearby (within ~2km) ---
-def get_nearby_point(lat, lon, dist_km=2):
-    # Roughly: 1 deg lat = 110km, 1 deg lon = 110km * cos(lat)
-    r_lat = random.uniform(-0.02, 0.02) # +/- 2km approx
-    r_lon = random.uniform(-0.02, 0.02)
-    return lat + r_lat, lon + r_lon
+# A hand-held antenna is good to a few degrees at best.
+AIM_ERROR_DEG = 4.0
+GPS_ACCURACY_M = (4, 30)
 
-def seed_data():
-    conn = sqlite3.connect('pangolin_data.db')
-    c = conn.cursor()
-    
-    print("Generating 50 realistic entries...")
 
-    # We will generate 25 "Sessions" (Pairs of readings) = 50 Total Entries
-    for i in range(1, 26):
-        # 1. Pick a random Animal and a "True" Location for it (The Secret Spot)
-        pango = random.choice(PANGOLINS)
-        true_pango_lat = get_nearby_point(CENTER_LAT, CENTER_LON)[0]
-        true_pango_lon = get_nearby_point(CENTER_LAT, CENTER_LON)[1]
-        
-        # 2. Generate Metadata
-        group_id = f"Auto_Sim_{i:02d}"
-        obs_time = datetime.now() - timedelta(days=random.randint(0, 30), minutes=random.randint(0, 600))
-        
-        # 3. Create Observer A (Somewhere 500m - 1km away)
-        obs_a_lat, obs_a_lon = get_nearby_point(true_pango_lat, true_pango_lon)
-        # Calculate bearing TO the animal
-        true_bearing_a = get_bearing(obs_a_lat, obs_a_lon, true_pango_lat, true_pango_lon)
-        # Add "Human Error" (+/- 4 degrees)
-        final_bearing_a = true_bearing_a + random.uniform(-4, 4)
-        
-        # 4. Create Observer B (Somewhere else)
-        obs_b_lat, obs_b_lon = get_nearby_point(true_pango_lat, true_pango_lon)
-        true_bearing_b = get_bearing(obs_b_lat, obs_b_lon, true_pango_lat, true_pango_lon)
-        final_bearing_b = true_bearing_b + random.uniform(-4, 4)
+OBSERVER_RANGE_M = (300, 1200)
+# A competent field team spreads out deliberately rather than standing where
+# they happen to be, so seeded observers are placed at well-separated azimuths
+# around the animal. Purely random placement puts them near-collinear often
+# enough that most sessions would produce no fix at all.
+MIN_AZIMUTH_SEPARATION_DEG = 45
 
-        # 5. Insert into Database
-        # Entry 1
-        c.execute("""
-            INSERT INTO raw_bearings 
-            (group_id, pango_id, observer, obs_lat, obs_lon, bearing, timestamp) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (group_id, pango, random.choice(OBSERVERS), obs_a_lat, obs_a_lon, round(final_bearing_a, 1), obs_time))
 
-        # Entry 2
-        c.execute("""
-            INSERT INTO raw_bearings 
-            (group_id, pango_id, observer, obs_lat, obs_lon, bearing, timestamp) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (group_id, pango, random.choice(OBSERVERS), obs_b_lat, obs_b_lon, round(final_bearing_b, 1), obs_time))
-        
-        print(f" - Created Group {group_id}: {pango} near {true_pango_lat:.4f}, {true_pango_lon:.4f}")
+def offset(lat, lon, max_deg=0.02):
+    return lat + random.uniform(-max_deg, max_deg), lon + random.uniform(-max_deg, max_deg)
 
-    conn.commit()
-    conn.close()
-    print("\n✅ Success! Added 50 entries.")
-    print("Go to your Dashboard and click 'Sync Now' or restart the app to see the Red Pins appear.")
+
+def observer_azimuths(count):
+    """Azimuths around the animal, at least MIN_AZIMUTH_SEPARATION_DEG apart."""
+    start = random.uniform(0, 360)
+    spread = random.uniform(MIN_AZIMUTH_SEPARATION_DEG, 360 / count)
+    return [(start + i * max(spread, MIN_AZIMUTH_SEPARATION_DEG)) % 360 for i in range(count)]
+
+
+def seed(sessions, clear):
+    app = create_app()
+    with app.app_context():
+        if clear:
+            print("Clearing existing bearings and fixes…")
+            CalculatedFix.query.delete()
+            RawBearing.query.delete()
+            db.session.commit()
+
+        for animal_id in ANIMALS:
+            if not db.session.get(Animal, animal_id):
+                db.session.add(Animal(id=animal_id))
+        db.session.commit()
+
+        created = 0
+        for index in range(1, sessions + 1):
+            animal = random.choice(ANIMALS)
+            true_lat, true_lon = offset(SITE_LAT, SITE_LON)
+            group_id = f"SEED{index:03d}"
+
+            observations = []
+            for azimuth in observer_azimuths(random.choice([2, 2, 3])):
+                obs_lon, obs_lat, _ = WGS84.fwd(
+                    true_lon, true_lat, azimuth, random.uniform(*OBSERVER_RANGE_M)
+                )
+                true_bearing = bearing_between(obs_lat, obs_lon, true_lat, true_lon)
+                measured = (true_bearing + random.gauss(0, AIM_ERROR_DEG)) % 360
+
+                db.session.add(
+                    RawBearing(
+                        reading_id=str(uuid.uuid4()),
+                        group_id=group_id,
+                        pango_id=animal,
+                        observer=random.choice(OBSERVERS),
+                        obs_lat=obs_lat,
+                        obs_lon=obs_lon,
+                        gps_accuracy=random.uniform(*GPS_ACCURACY_M),
+                        bearing=measured,
+                        heading_ref="true",
+                        declination_deg=0.0,
+                        bearing_true=measured,
+                        timestamp=utcnow(),
+                    )
+                )
+                observations.append(Observation(obs_lat, obs_lon, measured))
+
+            try:
+                fix = solve(observations)
+            except TriangulationError as exc:
+                print(f"  {group_id}: no fix ({exc})")
+                continue
+
+            db.session.add(
+                CalculatedFix(
+                    group_id=group_id,
+                    pango_id=animal,
+                    calc_lat=fix.lat,
+                    calc_lon=fix.lon,
+                    rms_error_m=fix.rms_error_m,
+                    crossing_angle_deg=fix.crossing_angle_deg,
+                    n_bearings=fix.n_bearings,
+                    quality=fix.quality,
+                    note=fix.describe(),
+                )
+            )
+            created += 1
+
+        db.session.commit()
+        print(f"Seeded {created} fixes from {sessions} sessions.")
+
 
 if __name__ == "__main__":
-    seed_data()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--sessions", type=int, default=25)
+    parser.add_argument("--clear", action="store_true", help="delete existing bearings and fixes first")
+    seed(**vars(parser.parse_args()))

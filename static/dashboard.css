@@ -1,0 +1,174 @@
+/* Mission control. Operated rather than read, so the craft here is
+ * information design: what needs attention should read at a glance. */
+
+html, body { height: 100%; }
+
+body {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+  overflow: hidden;
+}
+
+.top {
+  background: var(--header-bg);
+  color: var(--header-ink);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.top h1 { margin: 0; font-size: 1.05rem; font-weight: 700; flex: 1; }
+.top a, .top button { text-decoration: none; }
+
+.linkbtn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 13px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.1);
+  color: inherit;
+  font: 600 0.9rem var(--font);
+  cursor: pointer;
+}
+.linkbtn:hover { background: rgba(255, 255, 255, 0.2); }
+
+.filters {
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line-firm);
+  padding: 9px 16px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.filters label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  display: block;
+  margin-bottom: 3px;
+}
+.filters select, .filters input {
+  min-height: 38px;
+  padding: 6px 9px;
+  font-size: 0.92rem;
+  border-width: 1px;
+}
+.filters .group { display: flex; flex-direction: column; }
+.filters .spacer { flex: 1; }
+
+.status {
+  font-size: 0.85rem;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.status strong { color: var(--ink); }
+
+.content { flex: 1; display: flex; min-height: 0; }
+#map { flex: 1; min-width: 0; background: var(--surface-2); }
+
+.sidebar {
+  width: 380px;
+  flex: none;
+  background: var(--bg);
+  border-left: 1px solid var(--line-firm);
+  overflow-y: auto;
+  padding: 12px;
+}
+.sidebar h2 {
+  margin: 0 0 10px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.fix {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  padding: 11px 12px;
+  margin-bottom: 9px;
+  cursor: pointer;
+}
+.fix:hover { border-color: var(--line-firm); }
+.fix[aria-current="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.fix.q-fair { border-left-color: var(--warn); }
+.fix.q-poor { border-left-color: var(--danger); }
+.fix.q-unknown { border-left-color: var(--line-firm); }
+
+.fix-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.fix-id { font-weight: 800; font-size: 1.05rem; }
+.fix-session {
+  font-family: var(--font-num);
+  font-size: 0.78rem;
+  color: var(--ink-2);
+}
+.fix-when { font-size: 0.82rem; color: var(--ink-2); margin-top: 2px; }
+.fix-coords {
+  font-family: var(--font-num);
+  font-size: 0.86rem;
+  margin-top: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.fix-note { font-size: 0.84rem; color: var(--ink-2); margin-top: 5px; }
+.fix-actions { display: none; gap: 6px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line); }
+.fix[aria-current="true"] .fix-actions { display: flex; }
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  background: var(--ink);
+  color: var(--bg);
+  border-radius: 10px;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 0.94rem;
+  font-weight: 600;
+  z-index: 2000;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+}
+.toast[hidden] { display: none; }
+.toast button {
+  background: none;
+  border: 1px solid currentColor;
+  color: inherit;
+  border-radius: 6px;
+  padding: 5px 11px;
+  font: 700 0.88rem var(--font);
+  cursor: pointer;
+}
+
+.banner {
+  padding: 10px 16px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.banner[hidden] { display: none; }
+.banner.error { background: var(--danger-soft); color: var(--danger); }
+.banner.warn  { background: var(--warn-soft);  color: var(--warn); }
+
+.leaflet-popup-content { font-family: var(--font); font-size: 0.9rem; }
+.leaflet-popup-content b { font-size: 1rem; }
+
+@media (max-width: 860px) {
+  .content { flex-direction: column; }
+  .sidebar { width: auto; max-height: 42vh; border-left: none; border-top: 1px solid var(--line-firm); }
+  #map { min-height: 46vh; }
+}

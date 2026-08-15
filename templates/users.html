@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en" data-mode="day">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Accounts — PangoT</title>
+<meta name="theme-color" content="#1B2C31">
+<link rel="icon" href="/static/icon-192.png">
+<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/dashboard.css">
+<style>
+  body { display: block; overflow: auto; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 22px 16px 60px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+  th { font-size: 0.74rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); }
+  td.name { font-weight: 700; }
+  .table-scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <h1>Accounts</h1>
+  <a class="linkbtn" href="/dashboard">Dashboard</a>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>Add an account</h2>
+    <p style="margin:0 0 14px;color:var(--ink-2);font-size:0.92rem">
+      Coordinators can view and manage fixes. Admins can also manage accounts.
+      A coordinator account can reach every pangolin location the project holds,
+      so use a long, unique password.
+    </p>
+    <div class="field">
+      <label for="new-username">Username</label>
+      <input type="text" id="new-username" maxlength="64" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="new-password">Password (12 characters or more)</label>
+      <input type="password" id="new-password" autocomplete="new-password">
+    </div>
+    <div class="field">
+      <label for="new-role">Role</label>
+      <select id="new-role">
+        <option value="coordinator">Coordinator</option>
+        <option value="admin">Admin</option>
+      </select>
+    </div>
+    <button type="button" class="btn btn-primary" id="create-btn">Create account</button>
+    <div class="msg" id="create-msg" hidden></div>
+  </div>
+
+  <div class="card">
+    <h2>Existing accounts</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Role</th><th>Last signed in</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for user in users %}
+          <tr>
+            <td class="name">{{ user.username }}</td>
+            <td>{{ user.role }}</td>
+            <td>{{ user.last_login_at.strftime('%d %b %Y') if user.last_login_at else 'never' }}</td>
+            <td>
+              {% if user.disabled_at %}
+                <span class="chip poor">disabled</span>
+              {% else %}
+                <span class="chip good">active</span>
+              {% endif %}
+            </td>
+            <td>
+              <button type="button" class="linkbtn account-action"
+                      style="border-color:var(--line-firm);background:var(--surface-2);color:var(--ink)"
+                      data-id="{{ user.id }}"
+                      data-action="{{ 'enable' if user.disabled_at else 'disable' }}">
+                {{ 'Enable' if user.disabled_at else 'Disable' }}
+              </button>
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="5" style="color:var(--ink-2)">
+              No accounts yet. The <code>ADMIN_USERNAME</code> fallback is still active —
+              creating the first account switches it off.
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+  const CSRF = {{ csrf_token() | tojson }};
+
+  function post(url, body) {
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  }
+
+  function message(text, kind) {
+    const el = document.getElementById('create-msg');
+    el.className = `msg ${kind}`;
+    el.textContent = text;
+    el.hidden = false;
+  }
+
+  document.getElementById('create-btn').addEventListener('click', async () => {
+    const response = await post('/api/users', {
+      username: document.getElementById('new-username').value.trim(),
+      password: document.getElementById('new-password').value,
+      role: document.getElementById('new-role').value,
+    });
+    const body = await response.json().catch(() => ({}));
+    if (response.ok) {
+      message(`Created ${body.username}. Reloading…`, 'ok');
+      setTimeout(() => window.location.reload(), 700);
+    } else {
+      message(body.message || 'Could not create that account.', 'error');
+    }
+  });
+
+  document.querySelectorAll('.account-action').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const response = await post(`/api/users/${button.dataset.id}/${button.dataset.action}`);
+      if (response.ok) {
+        window.location.reload();
+      } else {
+        const body = await response.json().catch(() => ({}));
+        message(body.message || 'Could not change that account.', 'error');
+      }
+    });
+  });
+</script>
+</body>
+</html>

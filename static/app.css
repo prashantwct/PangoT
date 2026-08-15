@@ -1,0 +1,471 @@
+/* PangoT field app.
+ *
+ * Two things drive every choice here:
+ *
+ * 1. It is used outdoors in direct sun, one-handed, often in a hurry. So:
+ *    large type, large targets, high contrast, no decorative greys.
+ * 2. Pangolins are nocturnal, so most tracking happens at night. A white
+ *    screen at full brightness destroys dark adaptation for everyone standing
+ *    nearby and takes about twenty minutes to recover. Night mode is
+ *    red-on-black and is a one-tap toggle, not a settings page.
+ */
+
+:root {
+  --bg:          #F2F5F3;
+  --surface:     #FFFFFF;
+  --surface-2:   #E8EDEA;
+  --ink:         #14201D;
+  --ink-2:       #475854;
+  --line:        #C9D3CE;
+  --line-firm:   #A6B4AE;
+
+  --accent:      #0F7A44;   /* deepened from the original #2ecc71, which fails
+                               contrast on white and is unreadable in sun */
+  --accent-ink:  #FFFFFF;
+  --accent-soft: #E1F0E7;
+
+  --warn:        #8A5000;
+  --warn-soft:   #FBEEDC;
+  --danger:      #A72016;
+  --danger-soft: #FAE5E3;
+  --info:        #10556B;
+  --info-soft:   #E0EFF3;
+
+  --header-bg:   #1B2C31;
+  --header-ink:  #F2F7F6;
+
+  --radius: 10px;
+  --tap: 52px;              /* minimum comfortable target with gloved hands */
+
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+  --font-num: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Night mode. Applied by app.js as data-mode="night" on <html>, so it is
+ * present before first paint and never flashes white. */
+:root[data-mode="night"] {
+  --bg:          #000000;
+  --surface:     #0C0806;
+  --surface-2:   #170F0B;
+  --ink:         #FF8B62;
+  --ink-2:       #C25F3E;
+  --line:        #3A2115;
+  --line-firm:   #58311F;
+
+  --accent:      #FF7038;
+  --accent-ink:  #1A0B04;
+  --accent-soft: #240F07;
+
+  --warn:        #FFA05C;
+  --warn-soft:   #241408;
+  --danger:      #FF6B5B;
+  --danger-soft: #260C09;
+  --info:        #E08256;
+  --info-soft:   #1F0F09;
+
+  --header-bg:   #120A06;
+  --header-ink:  #FF8B62;
+}
+
+/* Night mode dims photographic and map imagery too — a bright map tile
+ * defeats the point of the rest of it. */
+:root[data-mode="night"] img,
+:root[data-mode="night"] canvas {
+  filter: brightness(0.55) sepia(0.6) hue-rotate(-28deg) saturate(2.2);
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 17px;          /* was 0.65-0.8rem greys; unreadable outdoors */
+  line-height: 1.5;
+  padding-bottom: 88px;     /* clears the fixed nav bar */
+  -webkit-text-size-adjust: 100%;
+}
+
+/* --- header ------------------------------------------------------------ */
+
+.header {
+  background: var(--header-bg);
+  color: var(--header-ink);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 900;
+}
+
+.session {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.session-code {
+  font-family: var(--font-num);
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  line-height: 1.1;
+}
+.session-meta {
+  font-size: 0.78rem;
+  opacity: 0.75;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-actions { display: flex; align-items: center; gap: 8px; }
+
+.icon-btn {
+  min-width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  font-size: 1.15rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+}
+.icon-btn:active { background: rgba(255, 255, 255, 0.2); }
+
+.initials {
+  width: 62px;
+  height: 44px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  color: inherit;
+  font: 700 1.05rem var(--font);
+  text-align: center;
+  text-transform: uppercase;
+}
+.initials::placeholder { color: inherit; opacity: 0.45; }
+.initials.needs-value { border-color: var(--danger); background: rgba(255, 90, 80, 0.22); }
+
+/* --- layout ------------------------------------------------------------ */
+
+.page { display: none; padding: 14px; }
+.page.active { display: block; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 14px;
+}
+.card h2 {
+  margin: 0 0 12px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.card h2 .step {
+  display: inline-block;
+  min-width: 22px;
+  height: 22px;
+  line-height: 22px;
+  text-align: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-family: var(--font-num);
+  margin-right: 7px;
+}
+
+/* --- controls ---------------------------------------------------------- */
+
+.btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 12px 16px;
+  border: none;
+  border-radius: var(--radius);
+  font: 700 1.05rem var(--font);
+  cursor: pointer;
+  text-decoration: none;
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn + .btn { margin-top: 10px; }
+
+.btn-primary { background: var(--accent); color: var(--accent-ink); }
+.btn-info    { background: var(--info);   color: #fff; }
+.btn-warn    { background: var(--warn);   color: #fff; }
+.btn-danger  { background: var(--danger); color: #fff; }
+.btn-quiet   { background: transparent; border: 2px solid var(--line-firm); color: var(--ink); }
+.btn-small   { min-height: 40px; font-size: 0.92rem; padding: 8px 12px; width: auto; }
+
+.btn-row { display: flex; gap: 10px; }
+.btn-row .btn { margin-top: 0; }
+
+:root[data-mode="night"] .btn-info,
+:root[data-mode="night"] .btn-warn,
+:root[data-mode="night"] .btn-danger {
+  color: var(--accent-ink);
+}
+
+input, select {
+  width: 100%;
+  min-height: var(--tap);
+  padding: 12px;
+  border: 2px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font: 500 1.1rem var(--font);
+}
+input:focus-visible, select:focus-visible, .btn:focus-visible,
+.icon-btn:focus-visible, .pango:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+input.invalid { border-color: var(--danger); background: var(--danger-soft); }
+input[type="number"] { font-family: var(--font-num); }
+
+.field { margin-bottom: 12px; }
+.field:last-child { margin-bottom: 0; }
+.field label {
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--ink-2);
+  margin-bottom: 5px;
+}
+.field-error {
+  display: none;
+  color: var(--danger);
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-top: 5px;
+}
+.field.has-error .field-error { display: block; }
+
+.row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+/* --- animal picker ----------------------------------------------------- */
+
+.pango-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 8px;
+}
+.pango {
+  min-height: var(--tap);
+  border: 2px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font: 700 1.05rem var(--font-num);
+  cursor: pointer;
+}
+.pango[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+/* --- status messages --------------------------------------------------- */
+
+.msg {
+  border-radius: var(--radius);
+  padding: 11px 13px;
+  margin-top: 12px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  border-left: 4px solid var(--ink-2);
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.msg[hidden] { display: none; }
+.msg.ok     { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
+.msg.warn   { background: var(--warn-soft);   border-color: var(--warn);   color: var(--ink); }
+.msg.error  { background: var(--danger-soft); border-color: var(--danger); color: var(--ink); }
+.msg.info   { background: var(--info-soft);   border-color: var(--info);   color: var(--ink); }
+.msg ul { margin: 6px 0 0; padding-left: 18px; font-weight: 500; }
+.msg li { margin-bottom: 3px; }
+
+/* --- accuracy / quality chips ------------------------------------------ */
+
+.chip {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+.chip.good { background: var(--accent-soft); color: var(--accent); }
+.chip.fair { background: var(--warn-soft);   color: var(--warn); }
+.chip.poor { background: var(--danger-soft); color: var(--danger); }
+/* Units must not be uppercased — "±9 m" is metres, "±9 M" is not. */
+.chip.unit { text-transform: none; letter-spacing: 0; font-family: var(--font-num); }
+
+.readout {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+/* --- queue list -------------------------------------------------------- */
+
+.queue-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.queue-item:last-child { border-bottom: none; }
+.queue-main { min-width: 0; }
+.queue-title { font-weight: 700; }
+.queue-detail {
+  font-family: var(--font-num);
+  font-size: 0.86rem;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.queue-actions { display: flex; gap: 6px; }
+
+.empty {
+  text-align: center;
+  color: var(--ink-2);
+  padding: 22px 12px;
+  font-size: 0.95rem;
+}
+
+/* --- navigate-to-fix --------------------------------------------------- */
+
+.nav-fix {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.nav-arrow {
+  width: 78px;
+  height: 78px;
+  flex: none;
+  border-radius: 50%;
+  border: 3px solid var(--accent);
+  display: grid;
+  place-items: center;
+}
+.nav-arrow svg { display: block; }
+.nav-numbers { min-width: 0; }
+.nav-distance {
+  font-family: var(--font-num);
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.nav-bearing { color: var(--ink-2); font-size: 0.95rem; margin-top: 3px; }
+
+/* --- bottom nav -------------------------------------------------------- */
+
+.nav-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 74px;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  background: var(--surface);
+  border-top: 1px solid var(--line-firm);
+  display: flex;
+  z-index: 900;
+}
+.nav-item {
+  flex: 1;
+  border: none;
+  background: none;
+  color: var(--ink-2);
+  font: 600 0.76rem var(--font);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  cursor: pointer;
+  border-top: 3px solid transparent;
+}
+.nav-item .nav-icon { font-size: 1.4rem; line-height: 1; }
+.nav-item[aria-selected="true"] { color: var(--accent); border-top-color: var(--accent); }
+.nav-badge {
+  position: absolute;
+  transform: translate(18px, -14px);
+  background: var(--danger);
+  color: #fff;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  padding: 1px 6px;
+  font-family: var(--font-num);
+}
+:root[data-mode="night"] .nav-badge { color: var(--accent-ink); }
+
+/* --- offline banner ---------------------------------------------------- */
+
+.offline-banner {
+  background: var(--warn);
+  color: #fff;
+  text-align: center;
+  padding: 7px 12px;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+:root[data-mode="night"] .offline-banner { color: var(--accent-ink); }
+
+/* --- dialog ------------------------------------------------------------ */
+
+dialog {
+  border: 1px solid var(--line-firm);
+  border-radius: 14px;
+  padding: 0;
+  background: var(--surface);
+  color: var(--ink);
+  width: min(420px, calc(100vw - 32px));
+}
+dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+.dialog-body { padding: 18px; }
+.dialog-body h2 { margin: 0 0 14px; font-size: 1.15rem; text-transform: none; letter-spacing: 0; color: var(--ink); }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+  .btn:active { transform: none; }
+}

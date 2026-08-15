@@ -263,3 +263,41 @@ Two things are deliberate:
   so a new fix appears within a couple of seconds. Each open dashboard holds a
   connection, which is why the Procfile uses `--worker-class gthread`; if the
   stream is unavailable the dashboard falls back to polling on its own.
+
+
+---
+
+## Keeping secrets out
+
+`.env` and the SQLite database were both committed to this repository once,
+while it was public. `.gitignore` does not prevent that — it has no effect on a
+file that is already tracked, which is exactly how it happened.
+
+`tools/check_secrets.py` now blocks it. CI runs it on every pull request, and it
+can run as a pre-commit hook so the commit never happens at all:
+
+```bash
+git config core.hooksPath .githooks     # once per clone
+```
+
+It refuses any tracked `.env`, `*.db`, `*.sqlite`, private key or `.pem`, and
+flags connection strings with inline passwords, AWS keys, GitHub tokens and
+Mapbox secret tokens. Documented examples pointing at `localhost` or
+`example.com` are ignored, so it stays quiet unless something is genuinely wrong.
+
+Also worth turning on, free for public repositories: **Settings → Code security
+→ Secret scanning** and **Push protection**, which blocks a push containing a
+recognised credential before it reaches GitHub.
+
+### If a secret is committed
+
+Deleting the file does not un-publish it — anyone can still fetch it from the
+commit it was added in, and forks keep their own copy.
+
+1. **Rotate the credential.** This is the only step that actually revokes
+   access; everything else is cleanup.
+2. `git rm --cached <file>`, add it to `.gitignore`, commit.
+3. Purge it from history with [`git filter-repo`](https://github.com/newren/git-filter-repo),
+   then force-push.
+4. Ask GitHub Support to drop cached views of the old blobs — a force-push alone
+   does not remove them.

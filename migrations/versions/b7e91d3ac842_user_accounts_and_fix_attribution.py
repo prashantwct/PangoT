@@ -76,11 +76,13 @@ def downgrade():
         batch.drop_index(batch.f("ix_users_username"))
     op.drop_table("users")
 
+    # Only drop the composite index this migration actually introduced.
+    #
+    # The two ix_*_group_id indexes are created by 273e298aa774 and dropped by
+    # its own downgrade; this revision merely re-created them after
+    # a1c47f2b9e30's batch_alter_table lost them. Dropping them here as well
+    # made `downgrade base` fail on 273e298aa774 with "index does not exist",
+    # which on Postgres rolls the whole downgrade back.
     conn = op.get_bind()
-    for table, name in (
-        ("calculated_fixes", "ix_calculated_fixes_group_pango"),
-        ("calculated_fixes", "ix_calculated_fixes_group_id"),
-        ("raw_bearings", "ix_raw_bearings_group_id"),
-    ):
-        if name in _index_names(conn, table):
-            op.drop_index(name, table_name=table)
+    if "ix_calculated_fixes_group_pango" in _index_names(conn, "calculated_fixes"):
+        op.drop_index("ix_calculated_fixes_group_pango", table_name="calculated_fixes")

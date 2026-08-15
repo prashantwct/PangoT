@@ -135,12 +135,20 @@ Set the result as `ADMIN_PASSWORD_HASH` and delete `ADMIN_PASSWORD`.
 
 ### Migrating the database
 
+**You do not normally run anything.** `gunicorn.conf.py` migrates the database
+in gunicorn's master process before the first worker starts, so a deploy brings
+its own schema with it. The start command stays a plain `gunicorn app:app …`
+with nothing in it that can drift out of step with the deployed code.
+
+Set `AUTO_MIGRATE=0` to turn that off and take manual control. The same logic is
+available as a command:
+
 ```bash
 flask deploy
 ```
 
-This is the release command in the `Procfile`, and it is safe to run on any
-database in any state. It handles three cases:
+Either way it is safe to run against any database in any state, and handles
+three cases:
 
 | State | What it does |
 |---|---|
@@ -154,9 +162,12 @@ that already exist — and a deploy whose release step fails leaves the app
 running new code against the old schema. Uploads then fail with an opaque
 reference number and the animal list comes back empty.
 
-If that has already happened, `flask deploy` fixes it in place; no data is
-touched. `/healthz` reports the schema state, and returns 503 while it is
-wrong.
+If that has already happened, booting the app fixes it in place; no data is
+touched. `/healthz` reports the schema state, and returns 503 while it is wrong.
+
+A failed migration never stops the app from starting. It boots on the old
+schema, `/healthz` goes degraded, and uploads return a message naming the
+problem — which beats a crash-looping host that serves nothing at all.
 
 ---
 

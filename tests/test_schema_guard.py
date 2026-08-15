@@ -184,3 +184,54 @@ def test_deploy_is_a_plain_upgrade_once_stamped(app):
     assert plan["case"] == "stamped"
     assert plan["action"] == "upgrade"
     assert plan["current"] == "a1c47f2b9e30"
+
+
+# --- boot-time migration ----------------------------------------------------
+
+
+def test_auto_migration_never_raises_when_the_database_is_unreachable():
+    """The property that matters: a failed migration must not stop the app.
+
+    An earlier deployment attempt chained the migration into the start command,
+    so when it failed the service crash-looped and served nothing. Booting on a
+    stale schema is worse than booting clean, but far better than not booting:
+    /healthz goes degraded and uploads explain themselves.
+    """
+    from werkzeug.security import generate_password_hash
+
+    from app import create_app
+    from config import Config
+    from extensions import db as _db
+    from schema import run_auto_migration
+
+    config = Config(env={
+        "FLASK_ENV": "production",
+        "DATABASE_URL": "postgresql://nobody:nobody@127.0.0.1:59999/nope",
+        "SECRET_KEY": "x" * 40,
+        "ADMIN_USERNAME": "coord",
+        "ADMIN_PASSWORD_HASH": generate_password_hash("a-long-enough-password"),
+        "FIELD_TOKEN": "t" * 24,
+    })
+    application = create_app(config)
+
+    with application.app_context():
+        result = run_auto_migration(application, _db)
+
+    assert result["state"] == "failed"      # reported, not raised
+
+
+def test_auto_migrate_defaults_on_and_can_be_disabled():
+    from config import Config
+
+    base = {
+        "FLASK_ENV": "production",
+        "SECRET_KEY": "x" * 40,
+        "ADMIN_USERNAME": "coord",
+        "ADMIN_PASSWORD_HASH": "x",
+        "FIELD_TOKEN": "t" * 24,
+    }
+
+    assert Config(env=base).auto_migrate is True
+    for off in ("0", "false", "no", "FALSE"):
+        assert Config(env={**base, "AUTO_MIGRATE": off}).auto_migrate is False
+    assert Config(env={**base, "AUTO_MIGRATE": "1"}).auto_migrate is True

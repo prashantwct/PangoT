@@ -123,6 +123,87 @@ def plan_deploy(engine, migrations_directory: str = "migrations") -> dict:
     return {"action": "upgrade", "case": "fresh", "current": None}
 
 
+# Advisory-lock key, so two instances starting at once cannot both migrate.
+# Arbitrary but must be stable across deploys.
+_MIGRATION_LOCK_KEY = 8_112_026_001
+
+
+def _acquire_lock(connection) -> bool:
+    """Take an exclusive migration lock. True if we got it (or none is needed)."""
+    if connection.dialect.name != "postgresql":
+        # SQLite deployments are single-process; the file lock is enough.
+        return True
+    return bool(connection.execute(
+        sa.text("SELECT pg_try_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY}
+    ).scalar())
+
+
+def _release_lock(connection) -> None:
+    if connection.dialect.name == "postgresql":
+        connection.execute(sa.text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY})
+
+
+def run_auto_migration(app, db, logger_=None) -> dict:
+    """Bring the database up to date during boot.
+
+    Called from gunicorn's on_starting hook, which runs once in the master
+    process before any worker forks — so the deployment needs no special start
+    command and nothing can reference a management command that does not exist
+    in the deployed revision. That mistake put this service into a crash loop
+    once already.
+
+    It deliberately never raises. A failed migration leaves the app running on
+    the old schema, where /healthz reports degraded and uploads return a message
+    naming the problem. That is strictly better than refusing to boot: the
+    dashboard stays readable, and a field team gets an explanation instead of a
+    dead host.
+    """
+    log = logger_ or app.logger
+    connection = None
+    try:
+        from flask_migrate import stamp, upgrade
+
+        connection = db.engine.connect()
+        if not _acquire_lock(connection):
+            log.info("Another instance is migrating; skipping and continuing to boot.")
+            return {"state": "skipped-locked"}
+
+        plan = plan_deploy(db.engine)
+        if plan["case"] == "adopt":
+            log.warning(
+                "Database has tables but no alembic_version — adopting at baseline %s "
+                "before upgrading.", plan["stamp"],
+            )
+            stamp(revision=plan["stamp"])
+        elif plan["case"] == "fresh":
+            log.info("Empty database — creating the schema from the migrations.")
+
+        upgrade()
+
+        status = check(db.engine)
+        if status["state"] == "ok":
+            log.info("Database schema is up to date at %s.", status["current"])
+        else:
+            log.error(
+                "Schema is still %s after migrating (at %s, expected %s).",
+                status["state"], status["current"], status["expected"],
+            )
+        return status
+    except Exception:
+        log.exception(
+            "Automatic migration failed. The app will still start, but uploads and "
+            "the animal list will fail until the database is upgraded. "
+            "Set AUTO_MIGRATE=0 and migrate manually if this keeps happening."
+        )
+        return {"state": "failed"}
+    finally:
+        if connection is not None:
+            try:
+                _release_lock(connection)
+            finally:
+                connection.close()
+
+
 def log_startup_state(app, engine) -> dict:
     """Report the schema state once at boot, loudly if it is wrong."""
     status = check(engine)

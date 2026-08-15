@@ -45,6 +45,13 @@ from config import Config
 from extensions import csrf, db, migrate
 from geodesy import to_true_bearing
 from models import Animal, CalculatedFix, RawBearing, User, to_dict, utcnow
+from schema import (
+    STALE_SCHEMA_MESSAGE,
+    check as check_schema,
+    log_startup_state,
+    looks_like_stale_schema,
+    plan_deploy,
+)
 from triangulation import Observation, TriangulationError, solve
 from validation import ValidationError, validate_animal_id, validate_batch
 
@@ -133,6 +140,15 @@ def create_app(config: Config | None = None) -> Flask:
         )
     if not config.mapbox_token:
         app.logger.info("MAPBOX_TOKEN not set; the dashboard will use OpenStreetMap tiles.")
+
+    # Say so at boot if the database is older than the code. Silence here is
+    # what turned a missing migration into an unexplained field failure.
+    if not config.testing:
+        with app.app_context():
+            try:
+                app.config["PANGOT_SCHEMA"] = log_startup_state(app, db.engine)
+            except Exception:
+                app.logger.warning("Could not determine the database schema state", exc_info=True)
 
     _register_routes(app)
     _register_error_handlers(app)
@@ -315,10 +331,33 @@ def _register_routes(app):  # noqa: C901 - route table, flat by nature
     def healthz():
         try:
             db.session.execute(db.text("SELECT 1"))
-            return jsonify({"status": "ok"})
         except Exception:
             app.logger.exception("Health check failed")
             return jsonify({"status": "degraded", "database": "unreachable"}), 503
+
+        schema_status = check_schema(db.engine)
+
+        # "out-of-date" is always wrong: the code expects columns the database
+        # does not have. "unstamped" is only wrong in production — a local
+        # database built by db.create_all() has no alembic_version and is fine.
+        degraded = schema_status["state"] == "out-of-date" or (
+            schema_status["state"] == "unstamped" and config.production
+        )
+
+        if degraded:
+            # Reported as degraded so a deploy that skipped its migrations shows
+            # up in monitoring rather than only when a field team tries to sync.
+            return (
+                jsonify({
+                    "status": "degraded",
+                    "database": "reachable",
+                    "schema": schema_status,
+                    "action": "Run `flask db upgrade` (stamp first if the database predates migrations).",
+                }),
+                503,
+            )
+
+        return jsonify({"status": "ok", "schema": schema_status})
 
     @app.route("/manifest.json")
     def manifest():
@@ -366,7 +405,13 @@ def _register_routes(app):  # noqa: C901 - route table, flat by nature
     @app.route("/get_animals")
     @requires_field_token
     def get_animals():
-        animals = Animal.query.filter(Animal.retired_at.is_(None)).order_by(Animal.id).all()
+        try:
+            animals = Animal.query.filter(Animal.retired_at.is_(None)).order_by(Animal.id).all()
+        except Exception as exc:  # noqa: BLE001
+            db.session.rollback()
+            if looks_like_stale_schema(exc):
+                return _fail(app, exc, STALE_SCHEMA_MESSAGE, status=503)
+            return _fail(app, exc, "Could not load the animal list.")
 
         if not animals:
             db.session.add_all(Animal(id=animal_id) for animal_id in DEFAULT_ANIMAL_IDS)
@@ -431,6 +476,10 @@ def _register_routes(app):  # noqa: C901 - route table, flat by nature
             db.session.commit()
         except Exception as exc:  # noqa: BLE001
             db.session.rollback()
+            if looks_like_stale_schema(exc):
+                # A missing column is an operations problem with a known fix,
+                # not a mystery. Say which one it is.
+                return _fail(app, exc, STALE_SCHEMA_MESSAGE, status=503)
             return _fail(app, exc, "Sync failed. Your readings are still saved on this device.")
 
         return jsonify(
@@ -701,6 +750,41 @@ def _csv_response(rows, header, filename):
 def _register_cli(app):
     """`flask users ...` — account management without needing the web UI."""
     import click
+
+    @app.cli.command("deploy")
+    def deploy_command():
+        """Bring the database up to date, whatever state it is in.
+
+        Safe to run on every deploy. Replaces the manual `flask db stamp ...`
+        then `flask db upgrade` dance, which is easy to forget — and forgetting
+        it is what put a live field team on an un-migrated database, where
+        uploads failed with an opaque reference number.
+        """
+        from flask_migrate import stamp, upgrade
+
+        plan = plan_deploy(db.engine)
+
+        if plan["case"] == "adopt":
+            click.echo(
+                "Database has tables but no alembic_version — adopting it at "
+                f"baseline {plan['stamp']} before upgrading."
+            )
+            stamp(revision=plan["stamp"])
+        elif plan["case"] == "fresh":
+            click.echo("Empty database — creating the schema from the migrations.")
+        else:
+            click.echo(f"Database is at {plan['current']}.")
+
+        upgrade()
+
+        status = check_schema(db.engine)
+        if status["state"] == "ok":
+            click.echo(f"Schema is up to date at {status['current']}.")
+        else:
+            raise click.ClickException(
+                f"Schema is still {status['state']} after upgrading "
+                f"(at {status['current']}, expected {status['expected']})."
+            )
 
     @app.cli.group()
     def users():

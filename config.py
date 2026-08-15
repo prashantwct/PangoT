@@ -83,6 +83,12 @@ class Config:
             else:
                 self.field_token = "dev-field-token"
 
+        # --- Deployment ---
+        # Migrate on boot by default. Render's free tier has no pre-deploy hook
+        # and no shell, so this is the only place migrations can reliably run.
+        # Set AUTO_MIGRATE=0 to take manual control.
+        self.auto_migrate = env.get("AUTO_MIGRATE", "1").strip().lower() not in ("0", "false", "no")
+
         # --- Map ---
         self.mapbox_token = env.get("MAPBOX_TOKEN", "").strip()
 

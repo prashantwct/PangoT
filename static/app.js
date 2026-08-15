@@ -144,6 +144,9 @@ const state = {
   accuracyLimit: 25,
   lastFixes: {},        // pango_id -> { lat, lon, quality, at }
   editingId: null,
+  animalsSource: 'none',   // server | cache | unpaired | offline | server-error | none
+  animalsFetchedAt: null,
+  serverStatus: 'unknown', // ok | unreachable | unpaired | error
 };
 
 const SESSION_ALPHABET = '23456789ABCDEFGHJKMNPQRSTVWXYZ'; // no 0/1/I/L/O/U
@@ -286,34 +289,69 @@ function renderSession() {
 // ---------------------------------------------------------------------------
 
 async function loadAnimals() {
+  // Never invent an animal list. An earlier version fell back to
+  // ['P01'..'P04'] whenever the cache was empty, which on an unpaired phone
+  // looked exactly like "all my animals have disappeared" — and offered four
+  // IDs that might not be the project's at all.
   const cached = await meta.get('animals');
-  state.animals = Array.isArray(cached) && cached.length ? cached : ['P01', 'P02', 'P03', 'P04'];
+  const cachedAt = await meta.get('animalsFetchedAt');
+
+  if (Array.isArray(cached) && cached.length) {
+    state.animals = cached;
+    state.animalsSource = 'cache';
+    state.animalsFetchedAt = cachedAt || null;
+  } else {
+    state.animals = [];
+    state.animalsSource = 'none';
+  }
   renderAnimals();
 
-  // Nothing to authenticate with yet — the pairing dialog is already open, and
-  // a request now would only produce a 401 in the console.
-  if (!state.fieldToken) return;
+  if (!state.fieldToken) {
+    state.animalsSource = state.animals.length ? 'cache' : 'unpaired';
+    renderAnimals();
+    renderStatus();
+    return;
+  }
 
-  // Refresh from the server when there is signal; the cache is what the field
-  // app actually runs on.
   try {
     const response = await fetch('/get_animals', { headers: apiHeaders() });
     if (response.ok) {
       const animals = await response.json();
       if (Array.isArray(animals) && animals.length) {
         state.animals = animals;
+        state.animalsSource = 'server';
+        state.animalsFetchedAt = new Date().toISOString();
         await meta.set('animals', animals);
+        await meta.set('animalsFetchedAt', state.animalsFetchedAt);
         renderAnimals();
       }
     } else if (response.status === 401) {
+      state.animalsSource = 'unpaired';
       showPairingDialog();
+    } else {
+      state.animalsSource = 'server-error';
     }
   } catch {
-    /* offline — the cached list is correct */
+    // Offline. The cached list is what the field app runs on, and is correct.
+    state.animalsSource = state.animals.length ? 'cache' : 'offline';
   }
+  renderAnimals();
+  renderStatus();
 }
 
 function renderAnimals() {
+  const notice = $('animal-notice');
+  if (notice) {
+    const stale = state.animalsSource !== 'server' && state.animalsSource !== 'cache';
+    notice.hidden = !stale;
+    if (stale) {
+      notice.className = 'msg warn';
+      notice.textContent = state.animalsSource === 'unpaired'
+        ? 'This phone is not paired, so the project animal list has not loaded. Sync → Status.'
+        : 'The project animal list has not loaded yet. Anything shown here is from this phone only.';
+    }
+  }
+
   const grid = $('animal-grid');
   grid.replaceChildren(...state.animals.map((id) => {
     const button = document.createElement('button');
@@ -351,7 +389,14 @@ function renderAnimals() {
   }));
 
   if (!state.animals.length) {
-    list.replaceChildren(emptyState('No animals yet. Add one above.'));
+    const reason = {
+      unpaired: 'The animal list has not loaded because this phone is not paired. '
+        + 'Enter the field token under Sync → Status.',
+      offline: 'The animal list has not loaded because there is no connection. '
+        + 'It will load once you have signal.',
+      'server-error': 'The server refused the animal list. Report this to the project lead.',
+    }[state.animalsSource] || 'No animals yet. Add one above, or connect to load the project list.';
+    list.replaceChildren(emptyState(reason));
   }
 }
 
@@ -529,15 +574,69 @@ function renderAccuracy(accuracy) {
 // ---------------------------------------------------------------------------
 
 let compassAttached = false;
-let sensorHeading = null;
+let sensorHeading = null;      // low-pass filtered heading, 0-360
 let headingRef = 'unknown';
 let renderAngle = null;
 let rafId = null;
 let lastFrameTime = null;
 const DEG_PER_SEC = 120;
 
+// Low-pass filter state, held as a vector rather than an angle. Averaging
+// angles directly is wrong across the 0/360 seam — 359 and 1 average to 180,
+// pointing the needle exactly backwards.
+let filterX = null;
+let filterY = null;
+
+// Raw samples from the last SAMPLE_WINDOW_MS, used to judge steadiness and to
+// average the value that gets locked.
+let samples = [];
+let calibrationWarned = false;
+
+// Smoothing factor per sensor event. Phones emit orientation at roughly 60 Hz,
+// so 0.12 settles in about a fifth of a second — fast enough to follow a real
+// turn, slow enough that magnetometer noise stops the needle twitching.
+const FILTER_ALPHA = 0.12;
+// Ignore filtered movement below this. Without it the last digit never sits
+// still, which is what makes a compass feel broken even when it is accurate.
+const DEADBAND_DEG = 0.4;
+const SAMPLE_WINDOW_MS = 1200;
+// Spread across the window below which the reading is called steady.
+const STEADY_SPREAD_DEG = 3.0;
+
 function shortAngleDiff(from, to) {
   return ((to - (from % 360) + 540) % 360) - 180;
+}
+
+/** Circular mean of a list of headings, in degrees. */
+function circularMean(headings) {
+  let x = 0;
+  let y = 0;
+  headings.forEach((h) => {
+    x += Math.sin((h * Math.PI) / 180);
+    y += Math.cos((h * Math.PI) / 180);
+  });
+  return ((Math.atan2(x, y) * 180) / Math.PI + 360) % 360;
+}
+
+/** Largest deviation from the circular mean, in degrees. */
+function circularSpread(headings) {
+  if (headings.length < 2) return Infinity;
+  const mean = circularMean(headings);
+  return Math.max(...headings.map((h) => Math.abs(shortAngleDiff(mean, h))));
+}
+
+function recentSamples() {
+  const cutoff = Date.now() - SAMPLE_WINDOW_MS;
+  samples = samples.filter((sample) => sample.at >= cutoff);
+  return samples;
+}
+
+/** Is the compass sitting still enough to take a reading from? */
+function compassSteadiness() {
+  const window = recentSamples();
+  if (window.length < 8) return { steady: false, spread: null, ready: false };
+  const spread = circularSpread(window.map((sample) => sample.heading));
+  return { steady: spread <= STEADY_SPREAD_DEG, spread, ready: true };
 }
 
 function drawRose(canvas) {
@@ -613,6 +712,21 @@ function renderLoop(timestamp) {
 
   $('compass-rose').style.transform = `rotate(${-renderAngle}deg)`;
   $('live-bearing').textContent = String(normalise(renderAngle)).padStart(3, '0');
+
+  // Tell the user when the reading is worth taking, rather than leaving them to
+  // guess whether the needle has settled.
+  const { steady, spread, ready } = compassSteadiness();
+  const indicator = $('compass-steady');
+  if (!ready) {
+    indicator.textContent = 'settling…';
+    indicator.className = 'chip';
+  } else if (steady) {
+    indicator.textContent = `steady ±${spread.toFixed(0)}°`;
+    indicator.className = 'chip good';
+  } else {
+    indicator.textContent = `moving ±${spread.toFixed(0)}°`;
+    indicator.className = 'chip fair';
+  }
 }
 
 const normalise = (angle) => ((Math.round(angle) % 360) + 360) % 360;
@@ -622,12 +736,43 @@ function onOrientation(event) {
   if (typeof event.webkitCompassHeading === 'number' && isFinite(event.webkitCompassHeading)) {
     raw = event.webkitCompassHeading;
     headingRef = 'true';        // iOS fuses with location, so this is true north
+
+    // Negative accuracy means iOS knows the magnetometer needs calibrating.
+    // Without this the needle wanders and nothing on screen explains why.
+    if (typeof event.webkitCompassAccuracy === 'number'
+        && (event.webkitCompassAccuracy < 0 || event.webkitCompassAccuracy > 25)
+        && !calibrationWarned) {
+      calibrationWarned = true;
+      showMessage($('bearing-msg'),
+        'This phone\'s compass needs calibrating — wave it in a figure of eight a few times, '
+        + 'and keep it away from the vehicle and the antenna boom.', 'warn', 12000);
+    }
   } else if (event.alpha !== null && isFinite(event.alpha)) {
     raw = (360 - event.alpha) % 360;
     headingRef = event.absolute ? 'magnetic' : 'unknown';
   }
   if (raw === null) return;
-  sensorHeading = raw;
+
+  samples.push({ heading: raw, at: Date.now() });
+  recentSamples();
+
+  // Filter as a vector so the 0/360 seam cannot invert the needle.
+  const rad = (raw * Math.PI) / 180;
+  const sx = Math.sin(rad);
+  const sy = Math.cos(rad);
+  if (filterX === null) {
+    filterX = sx;
+    filterY = sy;
+  } else {
+    filterX += FILTER_ALPHA * (sx - filterX);
+    filterY += FILTER_ALPHA * (sy - filterY);
+  }
+
+  const filtered = ((Math.atan2(filterX, filterY) * 180) / Math.PI + 360) % 360;
+  if (sensorHeading === null || Math.abs(shortAngleDiff(sensorHeading, filtered)) >= DEADBAND_DEG) {
+    sensorHeading = filtered;
+  }
+
   $('compass-error').hidden = true;
   $('heading-ref').textContent = headingRef === 'true'
     ? 'true north'
@@ -641,6 +786,10 @@ async function startCompass() {
   sensorHeading = null;
   renderAngle = null;
   lastFrameTime = null;
+  filterX = null;
+  filterY = null;
+  samples = [];
+  calibrationWarned = false;
 
   const attach = () => {
     window.addEventListener('deviceorientationabsolute', onOrientation, true);
@@ -675,6 +824,9 @@ function stopCompass() {
   sensorHeading = null;
   renderAngle = null;
   lastFrameTime = null;
+  filterX = null;
+  filterY = null;
+  samples = [];
   $('compass-rose').style.transform = 'rotate(0deg)';
   $('compass').hidden = true;
   $('compass-start').hidden = false;
@@ -682,15 +834,32 @@ function stopCompass() {
 }
 
 function lockBearing() {
-  if (renderAngle === null) {
-    showMessage($('bearing-msg'), 'The compass has not settled yet. Give it a moment.', 'warn', 4000);
+  const window = recentSamples();
+  if (renderAngle === null || window.length < 4) {
+    showMessage($('bearing-msg'), 'The compass has not settled yet. Give it a moment.', 'warn', 5000);
     return;
   }
-  const locked = normalise(renderAngle);
+
+  // Lock the average of the last second or so, not whatever instant the thumb
+  // happened to land on. Averaging removes most of the residual noise, and the
+  // press itself often nudges the phone.
+  const { steady, spread } = compassSteadiness();
+  const locked = Math.round(circularMean(window.map((sample) => sample.heading))) % 360;
+
   $('bearing').value = locked;
   state.bearing = { value: locked, ref: headingRef };
-  showMessage($('bearing-msg'), `Locked ${locked}° (${headingRef === 'true' ? 'true' : 'magnetic'}).`, 'ok', 4000);
   clearFieldErrors();
+
+  const reference = headingRef === 'true' ? 'true' : headingRef === 'magnetic' ? 'magnetic' : 'unknown reference';
+  if (steady) {
+    showMessage($('bearing-msg'),
+      `Locked ${locked}° (${reference}), averaged over ${window.length} readings.`, 'ok', 5000);
+  } else {
+    showMessage($('bearing-msg'),
+      `Locked ${locked}° (${reference}), but the compass was still moving ±${spread.toFixed(0)}°. `
+      + 'Hold the phone flat and still, wait for "steady", and lock again to replace this.',
+      'warn', 9000);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -929,6 +1098,126 @@ async function deleteReading(id) {
   await store.remove(id);
   if (state.editingId === id) state.editingId = null;
   renderQueue();
+}
+
+// ---------------------------------------------------------------------------
+// Status
+//
+// When something goes wrong in the field there is nobody to ask. This panel
+// exists so a field worker can read out exactly what is broken, and so
+// "my animals disappeared" and "sync fails" stop looking like the same
+// unexplained failure.
+// ---------------------------------------------------------------------------
+
+const ANIMAL_SOURCE_TEXT = {
+  server: 'loaded from the server',
+  cache: 'saved on this phone',
+  unpaired: 'not loaded — this phone is not paired',
+  offline: 'not loaded — no connection',
+  'server-error': 'not loaded — the server returned an error',
+  none: 'not loaded yet',
+};
+
+function ago(iso) {
+  if (!iso) return 'never';
+  const seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (seconds < 90) return 'just now';
+  if (seconds < 5400) return `${Math.round(seconds / 60)} min ago`;
+  if (seconds < 172800) return `${Math.round(seconds / 3600)} h ago`;
+  return `${Math.round(seconds / 86400)} days ago`;
+}
+
+function statusRow(label, value, tone) {
+  const row = document.createElement('div');
+  row.className = 'queue-item';
+
+  const main = document.createElement('div');
+  main.className = 'queue-main';
+  const title = document.createElement('div');
+  title.className = 'queue-title';
+  title.textContent = label;
+  const detail = document.createElement('div');
+  detail.className = 'queue-detail';
+  detail.textContent = value;
+  main.append(title, detail);
+
+  const chip = document.createElement('span');
+  chip.className = `chip ${tone}`;
+  chip.textContent = tone === 'good' ? 'ok' : tone === 'fair' ? 'check' : 'problem';
+
+  row.append(main, chip);
+  return row;
+}
+
+async function renderStatus() {
+  const list = $('status-list');
+  if (!list) return;
+
+  const all = await store.all();
+  const pending = all.filter((r) => !r.uploaded).length;
+  const uploaded = all.length - pending;
+
+  const rows = [
+    statusRow(
+      'This phone',
+      state.fieldToken ? 'Paired with the server' : 'Not paired — enter the field token',
+      state.fieldToken ? 'good' : 'poor',
+    ),
+    statusRow(
+      'Server',
+      {
+        ok: 'Reachable',
+        unreachable: 'Cannot be reached from here',
+        unpaired: 'Reachable, but rejected this phone\'s token',
+        error: 'Reachable, but reporting an error',
+        unknown: 'Not checked yet',
+      }[state.serverStatus],
+      state.serverStatus === 'ok' ? 'good' : state.serverStatus === 'unknown' ? 'fair' : 'poor',
+    ),
+    statusRow(
+      `Animals (${state.animals.length})`,
+      `${ANIMAL_SOURCE_TEXT[state.animalsSource] || 'unknown'} · last from server ${ago(state.animalsFetchedAt)}`,
+      state.animalsSource === 'server' ? 'good' : state.animalsSource === 'cache' ? 'fair' : 'poor',
+    ),
+    statusRow(
+      'Readings on this phone',
+      `${pending} waiting to upload, ${uploaded} already uploaded`,
+      pending === 0 ? 'good' : 'fair',
+    ),
+  ];
+
+  list.replaceChildren(...rows);
+}
+
+/** Ask the server whether it is alive, and whether it accepts our token. */
+async function checkServer() {
+  try {
+    const health = await fetch('/healthz', { cache: 'no-store' });
+    if (!health.ok) {
+      state.serverStatus = 'error';
+      renderStatus();
+      return state.serverStatus;
+    }
+  } catch {
+    state.serverStatus = 'unreachable';
+    renderStatus();
+    return state.serverStatus;
+  }
+
+  if (!state.fieldToken) {
+    state.serverStatus = 'unpaired';
+    renderStatus();
+    return state.serverStatus;
+  }
+
+  try {
+    const probe = await fetch('/get_animals', { headers: apiHeaders() });
+    state.serverStatus = probe.ok ? 'ok' : probe.status === 401 ? 'unpaired' : 'error';
+  } catch {
+    state.serverStatus = 'unreachable';
+  }
+  renderStatus();
+  return state.serverStatus;
 }
 
 // ---------------------------------------------------------------------------
@@ -1198,6 +1487,8 @@ async function boot() {
 
   setNightMode(localStorage.getItem('night_mode') === '1');
   updateOnlineBanner();
+  renderStatus();
+  checkServer();
 
   if (!state.fieldToken) showPairingDialog();
 
@@ -1269,6 +1560,21 @@ function wireEvents() {
 
   $('save-btn').addEventListener('click', saveReading);
   $('sync-btn').addEventListener('click', syncNow);
+  $('status-check').addEventListener('click', async () => {
+    showMessage($('sync-msg'), 'Checking…', 'info');
+    const result = await checkServer();
+    const text = {
+      ok: 'The server is reachable and this phone is paired.',
+      unreachable: 'The server cannot be reached. You are offline, or it is down.',
+      unpaired: 'The server is up but rejected this phone\'s field token. Re-enter it below.',
+      error: 'The server is reachable but reporting an error. Report this to the project lead.',
+    }[result];
+    showMessage($('sync-msg'), text, result === 'ok' ? 'ok' : 'error', 12000);
+  });
+  $('repair-btn').addEventListener('click', () => {
+    $('pair-token').value = '';
+    showPairingDialog();
+  });
   $('add-animal-btn').addEventListener('click', addAnimal);
   $('new-animal').addEventListener('keydown', (e) => { if (e.key === 'Enter') addAnimal(); });
 
@@ -1285,7 +1591,10 @@ function wireEvents() {
     state.fieldToken = token;
     await meta.set('fieldToken', token);
     $('pair-dialog').close();
-    loadAnimals();
+    // Re-check before reloading the list, so the status panel cannot show a
+    // stale "token rejected" next to a freshly loaded animal list.
+    await checkServer();
+    await loadAnimals();
   });
 
   window.addEventListener('online', () => { updateOnlineBanner(); });

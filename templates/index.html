@@ -64,6 +64,7 @@
 
   <div class="card">
     <h2><span class="step">1</span>Which animal</h2>
+    <div id="animal-notice" class="msg warn" hidden style="margin-top:0;margin-bottom:12px"></div>
     <div class="pango-grid" id="animal-grid"></div>
     <div style="margin-top:10px;color:var(--ink-2);font-size:0.9rem">
       Selected: <strong class="readout" id="selected-animal">none</strong>
@@ -113,8 +114,11 @@
         </div>
       </div>
 
-      <div style="text-align:center;font-size:0.85rem;color:var(--ink-2);margin-bottom:10px">
-        Reading against <span id="heading-ref">reference unknown</span>
+      <div style="text-align:center;margin-bottom:10px">
+        <span class="chip" id="compass-steady">settling…</span>
+        <div style="font-size:0.85rem;color:var(--ink-2);margin-top:6px">
+          Reading against <span id="heading-ref">reference unknown</span>
+        </div>
       </div>
 
       <button type="button" class="btn btn-primary" id="compass-lock">Lock this bearing</button>
@@ -182,6 +186,17 @@
       Upload readings
     </button>
     <div id="sync-msg" class="msg" hidden></div>
+  </div>
+
+  <div class="card">
+    <h2>Status</h2>
+    <div id="status-list"></div>
+    <button type="button" class="btn btn-quiet btn-small" id="status-check" style="width:100%;margin-top:12px">
+      Check the connection
+    </button>
+    <button type="button" class="btn btn-quiet btn-small" id="repair-btn" style="width:100%;margin-top:8px">
+      Re-enter the field token
+    </button>
   </div>
 
   <div class="card">

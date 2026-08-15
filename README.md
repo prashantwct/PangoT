@@ -297,7 +297,31 @@ commit it was added in, and forks keep their own copy.
 1. **Rotate the credential.** This is the only step that actually revokes
    access; everything else is cleanup.
 2. `git rm --cached <file>`, add it to `.gitignore`, commit.
-3. Purge it from history with [`git filter-repo`](https://github.com/newren/git-filter-repo),
-   then force-push.
+3. Purge it from history and force-push.
 4. Ask GitHub Support to drop cached views of the old blobs — a force-push alone
    does not remove them.
+
+### Purging the history
+
+`tools/purge_history.sh` does step 3 for the two files this actually happened to
+(`.env` and `pangolin_data.db`):
+
+```bash
+pip install git-filter-repo
+
+./tools/purge_history.sh --dry-run                    # rewrite, verify, push nothing
+PANGOT_CREDENTIALS_ROTATED=yes ./tools/purge_history.sh
+```
+
+It clones a fresh mirror into a temporary directory rather than touching your
+checkout, refuses to run until you confirm the credentials are rotated, asks for
+a typed confirmation, checks the files are gone from every ref before it pushes
+anything, and prints what is left to do afterwards.
+
+Two things to expect. Every commit gets a new SHA, so existing clones must be
+re-cloned — pushing from a stale one puts the old history straight back. And the
+force-push moves `main`, so a host with auto-deploy will rebuild; the tree is
+identical, but the service restarts.
+
+Close or merge open pull requests first. An open PR pins the old commits, which
+keeps the blobs reachable regardless.

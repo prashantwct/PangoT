@@ -1,15 +1,33 @@
 {
-  "name": "Pangolin Tracker",
-  "short_name": "PangoTrack",
+  "id": "/",
+  "name": "PangoT — Pangolin Field Tracking",
+  "short_name": "PangoT",
+  "description": "Record radio-telemetry bearings offline and upload them when there is signal.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#2c3e50",
-  "theme_color": "#2ecc71",
+  "orientation": "portrait",
+  "background_color": "#1B2C31",
+  "theme_color": "#1B2C31",
+  "categories": ["utilities", "productivity"],
   "icons": [
     {
-      "src": "https://cdn-icons-png.flaticon.com/512/2313/2313454.png",
+      "src": "/static/icon-192.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

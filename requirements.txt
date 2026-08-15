@@ -1,9 +1,25 @@
-Flask.env
-python-dotenv
-pyproj
-gunicorn         # Recommended for running the app in a production environment
-Flask-Migrate
-Flask-SQLAlchemy
-Flask-WTF
-numpy
-psycopg2-binary  # Required for the PostgreSQL connection defined in 
+# Runtime dependencies. Pinned so every install is reproducible —
+# re-pin deliberately, don't drift.
+#
+#   python -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+# --- Web ---
+Flask==3.1.3
+Flask-SQLAlchemy==3.1.1
+Flask-Migrate==4.1.0
+Flask-WTF==1.3.0
+Werkzeug==3.1.8
+gunicorn==26.0.0
+
+# --- Config ---
+python-dotenv==1.2.2
+
+# --- Database driver (Postgres in production, SQLite locally) ---
+psycopg2-binary==2.9.12
+
+# --- Geodesy & maths ---
+# pyproj: coordinate transforms for the triangulation solve.
+# pygeomag: World Magnetic Model, for magnetic->true bearing correction.
+numpy==2.4.6
+pyproj==3.7.2
+pygeomag==1.1.0

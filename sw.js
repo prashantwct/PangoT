@@ -22,6 +22,7 @@ const SHELL_ASSETS = [
   '/',
   '/static/app.css',
   '/static/app.js',
+  '/static/triangulate.js',
   '/static/icon-192.png',
   '/static/icon-512.png',
   '/manifest.json',

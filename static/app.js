@@ -157,24 +157,37 @@ function newSessionCode() {
 // Geo helpers — enough to answer "which way do I walk?" without the network
 // ---------------------------------------------------------------------------
 
-const R_EARTH = 6371008.8;
-const toRad = (d) => (d * Math.PI) / 180;
-const toDeg = (r) => (r * 180) / Math.PI;
+// Shared with the solver so the whole app measures in one frame — see
+// static/triangulate.js.
+const { distanceMetres, bearingDegrees } = Triangulate;
 
-function distanceMetres(lat1, lon1, lat2, lon2) {
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2
-    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R_EARTH * Math.asin(Math.min(1, Math.sqrt(a)));
-}
+/**
+ * Solve a fix from readings held on this phone.
+ *
+ * This is what makes "which way do I walk?" answerable with no signal. It is
+ * explicitly PROVISIONAL and labelled that way in the UI: it can only see
+ * bearings this phone recorded, and it does not apply magnetic declination
+ * (there is no World Magnetic Model on the client). The server's fix, which
+ * sees both observers and corrects for declination, replaces it after upload.
+ */
+async function computeLocalFix(animalId) {
+  if (!animalId) return null;
 
-function bearingDegrees(lat1, lon1, lat2, lon2) {
-  const dLon = toRad(lon2 - lon1);
-  const y = Math.sin(dLon) * Math.cos(toRad(lat2));
-  const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2))
-    - Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
-  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+  const readings = (await store.all()).filter((r) => (
+    r.group_id === state.session.code && r.pango_id === animalId && !r.error
+  ));
+  if (readings.length < 2) return null;
+
+  try {
+    const fix = Triangulate.solve(readings.map((r) => ({
+      lat: r.lat,
+      lon: r.lon,
+      bearingTrue: r.bearing,
+    })));
+    return { ...fix, source: 'provisional' };
+  } catch (err) {
+    return { problem: err.message, source: 'provisional' };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -778,6 +791,7 @@ async function saveReading() {
     'ok', 6000);
 
   renderQueue();
+  renderNavigation();
 }
 
 // ---------------------------------------------------------------------------
@@ -1037,26 +1051,62 @@ function renderSyncReport(element, body) {
 // only on the dashboard, which needs signal and a login.
 // ---------------------------------------------------------------------------
 
-function renderNavigation() {
+async function renderNavigation() {
   const card = $('nav-card');
-  const fix = state.selectedAnimal && state.lastFixes[state.selectedAnimal];
+  const animal = state.selectedAnimal;
 
-  if (!fix || !state.position) {
+  if (!animal) {
     card.hidden = true;
+    return;
+  }
+
+  // A server fix is authoritative; fall back to whatever this phone can work
+  // out on its own, which is the case that matters in the field.
+  const confirmed = state.lastFixes[animal];
+  const fix = confirmed || await computeLocalFix(animal);
+
+  if (!fix) {
+    card.hidden = true;
+    return;
+  }
+
+  if (fix.problem) {
+    $('nav-title').textContent = `${animal} — cannot place yet`;
+    $('nav-distance').textContent = '—';
+    $('nav-bearing').textContent = fix.problem;
+    $('nav-needle').style.transform = 'rotate(0deg)';
+    $('nav-quality').textContent = 'no fix';
+    $('nav-quality').className = 'chip poor';
+    $('nav-source').textContent = '';
+    card.hidden = false;
+    return;
+  }
+
+  $('nav-title').textContent = `${animal} — calculated position`;
+  $('nav-quality').textContent = fix.quality;
+  $('nav-quality').className = `chip ${fix.quality}`;
+  $('nav-source').textContent = confirmed
+    ? 'Confirmed by the server'
+    : 'Provisional — from this phone only, not yet uploaded';
+
+  if (!state.position) {
+    $('nav-distance').textContent = `${fix.lat.toFixed(5)}, ${fix.lon.toFixed(5)}`;
+    $('nav-distance').style.fontSize = '1.1rem';
+    $('nav-bearing').textContent = 'Get your position to see which way to walk';
+    $('nav-needle').style.transform = 'rotate(0deg)';
+    card.hidden = false;
     return;
   }
 
   const range = distanceMetres(state.position.lat, state.position.lon, fix.lat, fix.lon);
   const bearing = bearingDegrees(state.position.lat, state.position.lon, fix.lat, fix.lon);
 
+  $('nav-distance').style.fontSize = '';
   $('nav-distance').textContent = range < 1000
     ? `${Math.round(range)} m`
     : `${(range / 1000).toFixed(2)} km`;
   $('nav-bearing').textContent = `Head ${Math.round(bearing)}° from where you are standing`;
   $('nav-needle').style.transform = `rotate(${bearing}deg)`;
-  $('nav-title').textContent = `${state.selectedAnimal} — last calculated position`;
-  $('nav-quality').textContent = fix.quality;
-  $('nav-quality').className = `chip ${fix.quality}`;
   card.hidden = false;
 }
 

@@ -11,7 +11,10 @@
 const $ = (id) => document.getElementById(id);
 const CONFIG = window.PANGOT_CONFIG;
 
+// Fallback poll, used only when the live stream is unavailable. Also runs as a
+// slow safety net alongside the stream, in case an event is missed.
 const REFRESH_MS = 30000;
+const SAFETY_POLL_MS = 300000;
 // Typical aim error with a hand-held directional antenna. Used only to draw an
 // honest uncertainty ring — it is an estimate, and labelled as one.
 const BEARING_ERROR_DEG = 3;
@@ -608,5 +611,53 @@ if (!hasMap) {
   setBanner(state.persistentBanner.kind, state.persistentBanner.text);
 }
 
+// --- live updates ----------------------------------------------------------
+//
+// Server-sent events replace the 30-second poll: the server watches the
+// database once for all viewers and pushes only when something changed, so a
+// new fix appears within a couple of seconds. If the stream is unavailable —
+// too many connections, a proxy that buffers it, an old browser — this falls
+// straight back to polling rather than leaving the dashboard stale.
+
+let pollTimer = null;
+
+function startPolling(intervalMs) {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(() => loadData({ quiet: true }), intervalMs);
+}
+
+function startLiveUpdates() {
+  if (typeof EventSource === 'undefined') {
+    startPolling(REFRESH_MS);
+    return;
+  }
+
+  const source = new EventSource('/api/stream');
+  let everConnected = false;
+
+  source.addEventListener('changed', () => {
+    everConnected = true;
+    loadData({ quiet: true });
+  });
+
+  source.addEventListener('open', () => {
+    everConnected = true;
+    // The stream is carrying updates, so the poll drops to a slow safety net.
+    startPolling(SAFETY_POLL_MS);
+  });
+
+  source.addEventListener('error', () => {
+    // EventSource retries on its own. Poll faster meanwhile, and give up on the
+    // stream entirely if it never worked at all.
+    startPolling(REFRESH_MS);
+    if (!everConnected && source.readyState === EventSource.CLOSED) {
+      source.close();
+    }
+  });
+
+  window.addEventListener('beforeunload', () => source.close());
+}
+
 loadData();
-setInterval(() => loadData({ quiet: true }), REFRESH_MS);
+startPolling(REFRESH_MS);
+startLiveUpdates();

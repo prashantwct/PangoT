@@ -43,11 +43,33 @@ python -c "from werkzeug.security import generate_password_hash as h; print(h(in
 python -c "import secrets; print(secrets.token_urlsafe(24))"
 ```
 
+### Creating a coordinator account
+
+While no accounts exist, the app accepts `ADMIN_USERNAME` / `ADMIN_PASSWORD_HASH`
+from the environment so a fresh deployment is reachable. Creating the first
+account switches that fallback off.
+
+```bash
+flask users create kavya --role admin
+flask users list
+flask users passwd kavya
+flask users disable kavya
+```
+
+Admins can also manage accounts at `/users`. Coordinators can view and manage
+fixes; admins can additionally manage accounts. Deletions and edits are recorded
+against the account that made them.
+
 ### Running the tests
 
 ```bash
-.venv/bin/python -m pytest
+.venv/bin/python -m pytest      # Python
+node --test 'tests/js/*.test.js'   # the on-device solver
 ```
+
+CI runs both on every pull request, plus the migrations against a real Postgres
+(SQLite's loose typing makes `flask db check` report differences that are not
+real).
 
 ---
 
@@ -153,14 +175,25 @@ solution to that bearing line, in metres.
 residual is reported at all — the system is square, so it is always zero, and
 zero reads as "perfect". Crossing angle is reported instead. The solver also
 flags bearings whose fix lies *behind* the observer, which is what a 180° error
-looks like and is otherwise undetectable.
+looks like and is otherwise undetectable, and refuses a solve when the observers
+are within 25 m of each other (standing together, every bearing line passes
+through one point, so the "fix" is just where they are standing).
+
+### The same solve on the phone
+
+`static/triangulate.js` is a port of it, so the field app can answer "which way
+do I walk?" with no signal. It is labelled **provisional** in the UI and the
+server's answer replaces it after upload, because the phone sees only its own
+bearings and has no World Magnetic Model for declination. `tests/js/` checks the
+two agree to within a metre — if they drift apart, the field team stops trusting
+both.
 
 ---
 
 ## Project layout
 
 ```
-app.py             Factory, routes, sync orchestration
+app.py             Factory, routes, sync orchestration, live-update stream
 config.py          Environment config, validated at startup
 models.py          SQLAlchemy models
 triangulation.py   The solve — pure, no framework
@@ -168,10 +201,12 @@ geodesy.py         Projection, grid convergence, magnetic declination
 validation.py      Request payload validation
 auth.py            Coordinator sessions and field-device tokens
 static/app.js      Field app
+static/triangulate.js  The solve again, in JS, for offline use
 static/dashboard.js  Mission control
 sw.js              Service worker (offline)
 tools/make_icons.py  Regenerates the app icons
 tests/             pytest
+tests/js/          node --test
 ```
 
 ### Data model notes
@@ -198,3 +233,7 @@ Two things are deliberate:
   without destroying anyone's dark adaptation.
 - **Leaflet is vendored** in `static/vendor/leaflet/`, not loaded from a CDN, so
   the dashboard still works on a restricted network.
+- **The dashboard updates live.** `/api/stream` pushes over server-sent events,
+  so a new fix appears within a couple of seconds. Each open dashboard holds a
+  connection, which is why the Procfile uses `--worker-class gthread`; if the
+  stream is unavailable the dashboard falls back to polling on its own.

@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest
+
+  migrations:
+    name: Migrations (Postgres)
+    runs-on: ubuntu-latest
+    # Production runs Postgres. SQLite's loose typing makes `flask db check`
+    # report spurious differences (REAL vs Float, TEXT vs String), so the check
+    # only means anything against the real engine — which also exercises the
+    # migrations on the database they will actually run on.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pangot_ci
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports: ["5432:5432"]
+    env:
+      FLASK_ENV: development
+      FLASK_APP: app.py
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pangot_ci
+      SECRET_KEY: ci-only-not-a-secret
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Apply migrations
+        run: flask db upgrade
+
+      - name: Check the schema matches the models
+        # A model change without a matching migration deploys fine and then
+        # fails at the first query. Catch it here instead.
+        run: flask db check
+
+      - name: Check migrations reverse cleanly
+        run: |
+          flask db downgrade base
+          flask db upgrade
+
+  javascript:
+    name: JavaScript tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check the field app parses
+        run: |
+          node --check static/app.js
+          node --check static/dashboard.js
+          node --check static/triangulate.js
+          node --check sw.js
+
+      - name: Run solver tests
+        run: node --test 'tests/js/*.test.js'

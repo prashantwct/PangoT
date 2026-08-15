@@ -8,14 +8,18 @@ Two surfaces:
 
 Run locally with ``flask run``; in production with ``gunicorn app:app``.
 """
+import json
 import logging
 import os
+import threading
+import time
 import uuid
 
 from flask import (
     Flask,
     Response,
     flash,
+    stream_with_context,
     jsonify,
     redirect,
     render_template,
@@ -23,25 +27,83 @@ from flask import (
     send_from_directory,
     url_for,
 )
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from auth import (
+    authenticate,
+    create_user,
+    current_coordinator,
     log_in,
     log_out,
+    requires_admin,
     requires_coordinator,
     requires_field_token,
-    verify_coordinator,
+    set_password,
 )
 from config import Config
 from extensions import csrf, db, migrate
 from geodesy import to_true_bearing
-from models import Animal, CalculatedFix, RawBearing, to_dict, utcnow
+from models import Animal, CalculatedFix, RawBearing, User, to_dict, utcnow
 from triangulation import Observation, TriangulationError, solve
 from validation import ValidationError, validate_animal_id, validate_batch
 
 DEFAULT_ANIMAL_IDS = [f"P{i:02d}" for i in range(1, 17)]
+
+# Live-update stream tuning. Each open stream occupies a worker thread, so the
+# cap matters more than the interval.
+STREAM_POLL_SECONDS = 2.0
+STREAM_MAX_SECONDS = 300      # EventSource reconnects on its own afterwards
+STREAM_MAX_CLIENTS = 8
 API_PAGE_LIMIT = 1000
 API_MAX_LIMIT = 5000
+
+
+class _StreamLimiter:
+    """Caps concurrent live-update streams.
+
+    Each stream holds a worker thread until it closes, so without a cap a
+    handful of stale browser tabs could occupy every thread and take the
+    dashboard down for everyone.
+    """
+
+    def __init__(self, limit):
+        self._lock = threading.Lock()
+        self._limit = limit
+        self._count = 0
+
+    def acquire(self) -> bool:
+        with self._lock:
+            if self._count >= self._limit:
+                return False
+            self._count += 1
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            self._count = max(0, self._count - 1)
+
+
+_streams = _StreamLimiter(STREAM_MAX_CLIENTS)
+
+
+def _data_fingerprint() -> dict:
+    """A cheap summary that changes whenever the dashboard's view would.
+
+    Counts alone would miss an edited note, which is why CalculatedFix carries
+    an ``updated_at``.
+    """
+    def as_iso(value):
+        return value.isoformat() if value is not None else None
+
+    return {
+        "bearings": db.session.query(func.count(RawBearing.id)).scalar() or 0,
+        "fixes": db.session.query(func.count(CalculatedFix.id)).scalar() or 0,
+        "latest_bearing": as_iso(db.session.query(func.max(RawBearing.created_at)).scalar()),
+        "latest_fix": as_iso(db.session.query(func.max(CalculatedFix.timestamp)).scalar()),
+        "latest_edit": as_iso(db.session.query(func.max(CalculatedFix.updated_at)).scalar()),
+        "latest_delete": as_iso(db.session.query(func.max(CalculatedFix.deleted_at)).scalar()),
+    }
 
 
 def create_app(config: Config | None = None) -> Flask:
@@ -74,6 +136,7 @@ def create_app(config: Config | None = None) -> Flask:
 
     _register_routes(app)
     _register_error_handlers(app)
+    _register_cli(app)
     return app
 
 
@@ -276,8 +339,9 @@ def _register_routes(app):  # noqa: C901 - route table, flat by nature
         if request.method == "POST":
             username = request.form.get("username", "")
             password = request.form.get("password", "")
-            if verify_coordinator(username, password):
-                log_in(username)
+            identity = authenticate(username, password)
+            if identity:
+                log_in(identity)
                 destination = request.args.get("next", "")
                 # Only ever redirect within this site.
                 if not destination.startswith("/") or destination.startswith("//"):
@@ -437,7 +501,9 @@ def _register_routes(app):  # noqa: C901 - route table, flat by nature
         # Soft delete: this is irreplaceable field data, and the only guard in
         # front of it is one click.
         fix.deleted_at = utcnow()
+        fix.deleted_by = current_coordinator()
         db.session.commit()
+        app.logger.info("Fix %s deleted by %s", fix_id, current_coordinator())
         return jsonify({"status": "deleted", "id": fix_id})
 
     @app.route("/api/fix/<int:fix_id>/restore", methods=["POST"])
@@ -447,7 +513,9 @@ def _register_routes(app):  # noqa: C901 - route table, flat by nature
         if not fix:
             return jsonify({"status": "error", "message": "No such fix"}), 404
         fix.deleted_at = None
+        fix.deleted_by = None
         db.session.commit()
+        app.logger.info("Fix %s restored by %s", fix_id, current_coordinator())
         return jsonify({"status": "restored", "id": fix_id})
 
     @app.route("/api/fix/<int:fix_id>", methods=["POST"])
@@ -469,8 +537,116 @@ def _register_routes(app):  # noqa: C901 - route table, flat by nature
         except ValidationError as exc:
             return jsonify({"status": "error", "message": str(exc)}), 400
 
+        fix.updated_by = current_coordinator()
+        fix.updated_at = utcnow()
         db.session.commit()
         return jsonify({"status": "updated", "id": fix_id})
+
+    # --- account management ---
+
+    @app.route("/users")
+    @requires_admin
+    def users_page():
+        return render_template("users.html", users=User.query.order_by(User.username).all())
+
+    @app.route("/api/users", methods=["POST"])
+    @requires_admin
+    def create_user_route():
+        payload = request.get_json(silent=True) or {}
+        username = str(payload.get("username", "")).strip()
+        password = str(payload.get("password", ""))
+        role = str(payload.get("role", "coordinator"))
+
+        if not username or len(username) > 64:
+            return jsonify({"status": "error", "message": "Username is required, 64 characters or fewer"}), 400
+        if len(password) < 12:
+            # Coordinators hold every pangolin location the project has.
+            return jsonify({"status": "error", "message": "Password must be at least 12 characters"}), 400
+        if role not in ("admin", "coordinator"):
+            return jsonify({"status": "error", "message": "Role must be admin or coordinator"}), 400
+        if User.query.filter_by(username=username).first():
+            return jsonify({"status": "error", "message": f"{username} already has an account"}), 409
+
+        create_user(username, password, role)
+        app.logger.info("Account %r created by %s", username, current_coordinator())
+        return jsonify({"status": "created", "username": username})
+
+    @app.route("/api/users/<int:user_id>/disable", methods=["POST"])
+    @requires_admin
+    def disable_user_route(user_id):
+        user = db.session.get(User, user_id)
+        if not user:
+            return jsonify({"status": "error", "message": "No such account"}), 404
+        if user.username == current_coordinator():
+            return jsonify({"status": "error", "message": "You cannot disable your own account"}), 400
+        if user.is_admin and User.query.filter_by(role="admin", disabled_at=None).count() <= 1:
+            return jsonify({"status": "error", "message": "That is the last admin account"}), 400
+
+        user.disabled_at = utcnow()
+        db.session.commit()
+        app.logger.info("Account %r disabled by %s", user.username, current_coordinator())
+        return jsonify({"status": "disabled", "username": user.username})
+
+    @app.route("/api/users/<int:user_id>/enable", methods=["POST"])
+    @requires_admin
+    def enable_user_route(user_id):
+        user = db.session.get(User, user_id)
+        if not user:
+            return jsonify({"status": "error", "message": "No such account"}), 404
+        user.disabled_at = None
+        db.session.commit()
+        return jsonify({"status": "enabled", "username": user.username})
+
+    # --- live updates ---
+    #
+    # Replaces the dashboard's 30-second poll. The server still checks the
+    # database on a short interval, but it does so once for all viewers and
+    # pushes only when something actually changed, so a coordinator sees a new
+    # fix within a couple of seconds instead of up to thirty.
+    #
+    # Each stream holds a worker thread for its lifetime, hence the cap and the
+    # gthread worker class in the Procfile. The client falls back to polling if
+    # this is unavailable, so losing it degrades rather than breaks.
+
+    @app.route("/api/stream")
+    @requires_coordinator
+    def stream():
+        if not _streams.acquire():
+            return (
+                jsonify({"status": "error", "message": "Too many live connections", "fallback": "poll"}),
+                503,
+            )
+
+        @stream_with_context
+        def events():
+            try:
+                last = None
+                deadline = time.monotonic() + STREAM_MAX_SECONDS
+                while time.monotonic() < deadline:
+                    # Drop the session each pass so the next read sees committed
+                    # work from other workers rather than a cached snapshot.
+                    db.session.remove()
+                    current = _data_fingerprint()
+                    if current != last:
+                        last = current
+                        yield f"event: changed\ndata: {json.dumps(current)}\n\n"
+                    else:
+                        yield ": keepalive\n\n"
+                    time.sleep(STREAM_POLL_SECONDS)
+                yield "event: reconnect\ndata: {}\n\n"
+            finally:
+                _streams.release()
+
+        return Response(
+            events(),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                # Stops nginx buffering the stream into uselessness.
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     # --- exports ---
 
@@ -520,6 +696,73 @@ def _csv_response(rows, header, filename):
         mimetype="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _register_cli(app):
+    """`flask users ...` — account management without needing the web UI."""
+    import click
+
+    @app.cli.group()
+    def users():
+        """Manage coordinator accounts."""
+
+    @users.command("create")
+    @click.argument("username")
+    @click.option("--role", type=click.Choice(["admin", "coordinator"]), default="coordinator")
+    @click.password_option(help="Minimum 12 characters.")
+    def users_create(username, role, password):
+        if len(password) < 12:
+            raise click.ClickException("Password must be at least 12 characters")
+        if User.query.filter_by(username=username).first():
+            raise click.ClickException(f"{username} already has an account")
+        create_user(username, password, role)
+        click.echo(f"Created {role} account {username!r}.")
+
+    @users.command("list")
+    def users_list():
+        rows = User.query.order_by(User.username).all()
+        if not rows:
+            click.echo("No accounts yet. The ADMIN_USERNAME fallback is still active — "
+                       "create one with `flask users create <name> --role admin` to disable it.")
+            return
+        for user in rows:
+            state = "disabled" if user.disabled_at else "active"
+            last = user.last_login_at.strftime("%Y-%m-%d") if user.last_login_at else "never"
+            click.echo(f"{user.username:<24} {user.role:<12} {state:<9} last login {last}")
+
+    @users.command("passwd")
+    @click.argument("username")
+    @click.password_option(help="Minimum 12 characters.")
+    def users_passwd(username, password):
+        if len(password) < 12:
+            raise click.ClickException("Password must be at least 12 characters")
+        user = User.query.filter_by(username=username).first()
+        if not user:
+            raise click.ClickException(f"No account named {username!r}")
+        set_password(user, password)
+        click.echo(f"Password updated for {username!r}.")
+
+    @users.command("disable")
+    @click.argument("username")
+    def users_disable(username):
+        user = User.query.filter_by(username=username).first()
+        if not user:
+            raise click.ClickException(f"No account named {username!r}")
+        if user.is_admin and User.query.filter_by(role="admin", disabled_at=None).count() <= 1:
+            raise click.ClickException("That is the last active admin account")
+        user.disabled_at = utcnow()
+        db.session.commit()
+        click.echo(f"Disabled {username!r}.")
+
+    @users.command("enable")
+    @click.argument("username")
+    def users_enable(username):
+        user = User.query.filter_by(username=username).first()
+        if not user:
+            raise click.ClickException(f"No account named {username!r}")
+        user.disabled_at = None
+        db.session.commit()
+        click.echo(f"Enabled {username!r}.")
 
 
 def _register_error_handlers(app):

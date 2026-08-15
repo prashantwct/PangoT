@@ -14,8 +14,14 @@ class ConfigError(RuntimeError):
     """Raised at startup when required configuration is missing."""
 
 
-def _is_production() -> bool:
-    return os.getenv("FLASK_ENV", "production").lower() not in ("development", "dev", "testing")
+def _is_production(env) -> bool:
+    """Read FLASK_ENV from the supplied environment, not the ambient one.
+
+    Taking it from ``os.environ`` regardless made ``Config(env=...)`` only
+    partly injectable: an unrelated FLASK_ENV in the shell silently changed how
+    an explicitly-constructed config behaved.
+    """
+    return env.get("FLASK_ENV", "production").lower() not in ("development", "dev", "testing")
 
 
 class Config:
@@ -24,7 +30,7 @@ class Config:
     def __init__(self, env=None, testing=False):
         env = os.environ if env is None else env
         self.testing = testing
-        self.production = _is_production() and not testing
+        self.production = _is_production(env) and not testing
 
         missing = []
 

@@ -574,70 +574,54 @@ function renderAccuracy(accuracy) {
 // ---------------------------------------------------------------------------
 
 let compassAttached = false;
-let sensorHeading = null;      // low-pass filtered heading, 0-360
 let headingRef = 'unknown';
 let renderAngle = null;
 let rafId = null;
 let lastFrameTime = null;
 const DEG_PER_SEC = 120;
-
-// Low-pass filter state, held as a vector rather than an angle. Averaging
-// angles directly is wrong across the 0/360 seam — 359 and 1 average to 180,
-// pointing the needle exactly backwards.
-let filterX = null;
-let filterY = null;
-
-// Raw samples from the last SAMPLE_WINDOW_MS, used to judge steadiness and to
-// average the value that gets locked.
-let samples = [];
 let calibrationWarned = false;
+let noReferenceWarned = false;
 
-// Smoothing factor per sensor event. Phones emit orientation at roughly 60 Hz,
-// so 0.12 settles in about a fifth of a second — fast enough to follow a real
-// turn, slow enough that magnetometer noise stops the needle twitching.
-const FILTER_ALPHA = 0.12;
-// Ignore filtered movement below this. Without it the last digit never sits
-// still, which is what makes a compass feel broken even when it is accurate.
-const DEADBAND_DEG = 0.4;
-const SAMPLE_WINDOW_MS = 1200;
-// Spread across the window below which the reading is called steady.
-const STEADY_SPREAD_DEG = 3.0;
+// Choosing which orientation event to trust, the low-pass filter and the
+// steadiness judgement all live in static/compass.js. They are in their own
+// module because they cannot be tested from here — app.js runs on load, so a
+// test cannot import it — and this is the part that was wrong. Read the header
+// of that file for what went wrong and why the arbitration exists.
+const compass = new PangoCompass.Compass();
+const shortAngleDiff = PangoCompass.shortAngleDiff;
 
-function shortAngleDiff(from, to) {
-  return ((to - (from % 360) + 540) % 360) - 180;
+// Everything below is display. Nothing here touches the sensor maths.
+
+// Write to the DOM only when the value actually changes. The old code assigned
+// textContent on every frame and every sensor event — up to 120 times a second
+// for the reference caption, which alternated between two different strings
+// because it was being set from two different sensors. That alone is visible
+// flicker, whatever the needle is doing.
+function paint(id, text, className) {
+  const node = $(id);
+  if (node.textContent !== text) node.textContent = text;
+  if (className !== undefined && node.className !== className) node.className = className;
 }
 
-/** Circular mean of a list of headings, in degrees. */
-function circularMean(headings) {
-  let x = 0;
-  let y = 0;
-  headings.forEach((h) => {
-    x += Math.sin((h * Math.PI) / 180);
-    y += Math.cos((h * Math.PI) / 180);
-  });
-  return ((Math.atan2(x, y) * 180) / Math.PI + 360) % 360;
+// The displayed integer only moves once the needle has genuinely moved off it.
+// Without this the last digit alternates for ever between two values whenever
+// the true heading sits near a boundary, which reads as a broken instrument
+// even though the compass is accurate.
+const DISPLAY_HYSTERESIS_DEG = 0.75;
+let displayedBearing = null;
+
+function displayBearing(angle) {
+  if (displayedBearing === null
+      || Math.abs(shortAngleDiff(displayedBearing, angle)) >= DISPLAY_HYSTERESIS_DEG) {
+    displayedBearing = ((Math.round(angle) % 360) + 360) % 360;
+  }
+  return displayedBearing;
 }
 
-/** Largest deviation from the circular mean, in degrees. */
-function circularSpread(headings) {
-  if (headings.length < 2) return Infinity;
-  const mean = circularMean(headings);
-  return Math.max(...headings.map((h) => Math.abs(shortAngleDiff(mean, h))));
-}
-
-function recentSamples() {
-  const cutoff = Date.now() - SAMPLE_WINDOW_MS;
-  samples = samples.filter((sample) => sample.at >= cutoff);
-  return samples;
-}
-
-/** Is the compass sitting still enough to take a reading from? */
-function compassSteadiness() {
-  const window = recentSamples();
-  if (window.length < 8) return { steady: false, spread: null, ready: false };
-  const spread = circularSpread(window.map((sample) => sample.heading));
-  return { steady: spread <= STEADY_SPREAD_DEG, spread, ready: true };
-}
+// Steadiness is a judgement about the last second; recomputing it 60 times a
+// second buys nothing and churns the label.
+const STEADY_REFRESH_MS = 150;
+let lastSteadyCheck = 0;
 
 function drawRose(canvas) {
   const dpr = window.devicePixelRatio || 1;
@@ -697,13 +681,13 @@ function drawRose(canvas) {
 function renderLoop(timestamp) {
   if (!compassAttached) return;
   rafId = requestAnimationFrame(renderLoop);
-  if (sensorHeading === null) return;
+  if (compass.heading === null) return;
 
   if (renderAngle === null) {
-    renderAngle = sensorHeading;
+    renderAngle = compass.heading;
   } else if (lastFrameTime !== null) {
     const dt = Math.min((timestamp - lastFrameTime) / 1000, 0.05);
-    const diff = shortAngleDiff(renderAngle, sensorHeading);
+    const diff = shortAngleDiff(renderAngle, compass.heading);
     const maxStep = DEG_PER_SEC * dt;
     // Never reduced mod 360 — that is what prevents the 0/360 flicker.
     renderAngle += Math.max(-maxStep, Math.min(maxStep, diff));
@@ -711,92 +695,94 @@ function renderLoop(timestamp) {
   lastFrameTime = timestamp;
 
   $('compass-rose').style.transform = `rotate(${-renderAngle}deg)`;
-  $('live-bearing').textContent = String(normalise(renderAngle)).padStart(3, '0');
+
+  paint('live-bearing', String(displayBearing(renderAngle)).padStart(3, '0'));
 
   // Tell the user when the reading is worth taking, rather than leaving them to
   // guess whether the needle has settled.
-  const { steady, spread, ready } = compassSteadiness();
-  const indicator = $('compass-steady');
-  if (!ready) {
-    indicator.textContent = 'settling…';
-    indicator.className = 'chip';
-  } else if (steady) {
-    indicator.textContent = `steady ±${spread.toFixed(0)}°`;
-    indicator.className = 'chip good';
-  } else {
-    indicator.textContent = `moving ±${spread.toFixed(0)}°`;
-    indicator.className = 'chip fair';
+  if (timestamp - lastSteadyCheck >= STEADY_REFRESH_MS) {
+    lastSteadyCheck = timestamp;
+    const { steady, spread, ready } = compass.steadiness(Date.now());
+    if (!ready) {
+      paint('compass-steady', 'settling…', 'chip');
+    } else if (steady) {
+      paint('compass-steady', `steady ±${spread.toFixed(0)}°`, 'chip good');
+    } else {
+      paint('compass-steady', `moving ±${spread.toFixed(0)}°`, 'chip fair');
+    }
   }
 }
 
-const normalise = (angle) => ((Math.round(angle) % 360) + 360) % 360;
-
 function onOrientation(event) {
-  let raw = null;
-  if (typeof event.webkitCompassHeading === 'number' && isFinite(event.webkitCompassHeading)) {
-    raw = event.webkitCompassHeading;
-    headingRef = 'true';        // iOS fuses with location, so this is true north
+  const result = compass.handle(event, Date.now());
+  if (!result.accepted) return;      // a frame we are not using
 
-    // Negative accuracy means iOS knows the magnetometer needs calibrating.
-    // Without this the needle wanders and nothing on screen explains why.
-    if (typeof event.webkitCompassAccuracy === 'number'
-        && (event.webkitCompassAccuracy < 0 || event.webkitCompassAccuracy > 25)
-        && !calibrationWarned) {
-      calibrationWarned = true;
-      showMessage($('bearing-msg'),
-        'This phone\'s compass needs calibrating — wave it in a figure of eight a few times, '
-        + 'and keep it away from the vehicle and the antenna boom.', 'warn', 12000);
-    }
-  } else if (event.alpha !== null && isFinite(event.alpha)) {
-    raw = (360 - event.alpha) % 360;
-    headingRef = event.absolute ? 'magnetic' : 'unknown';
-  }
-  if (raw === null) return;
-
-  samples.push({ heading: raw, at: Date.now() });
-  recentSamples();
-
-  // Filter as a vector so the 0/360 seam cannot invert the needle.
-  const rad = (raw * Math.PI) / 180;
-  const sx = Math.sin(rad);
-  const sy = Math.cos(rad);
-  if (filterX === null) {
-    filterX = sx;
-    filterY = sy;
-  } else {
-    filterX += FILTER_ALPHA * (sx - filterX);
-    filterY += FILTER_ALPHA * (sy - filterY);
+  // Switching frames means the old needle position is meaningless. Snap rather
+  // than sweep 200° across the dial.
+  if (result.switched) {
+    renderAngle = null;
+    displayedBearing = null;
+    lastFrameTime = null;
   }
 
-  const filtered = ((Math.atan2(filterX, filterY) * 180) / Math.PI + 360) % 360;
-  if (sensorHeading === null || Math.abs(shortAngleDiff(sensorHeading, filtered)) >= DEADBAND_DEG) {
-    sensorHeading = filtered;
+  // Negative or large accuracy means iOS knows the magnetometer needs
+  // calibrating. Without this the needle wanders and nothing explains why.
+  if (result.source === 'true'
+      && typeof event.webkitCompassAccuracy === 'number'
+      && (event.webkitCompassAccuracy < 0 || event.webkitCompassAccuracy > 25)
+      && !calibrationWarned) {
+    calibrationWarned = true;
+    showMessage($('bearing-msg'),
+      'This phone\'s compass needs calibrating — wave it in a figure of eight a few times, '
+      + 'and keep it away from the vehicle and the antenna boom.', 'warn', 12000);
   }
 
-  $('compass-error').hidden = true;
-  $('heading-ref').textContent = headingRef === 'true'
-    ? 'true north'
-    : headingRef === 'magnetic' ? 'magnetic north — corrected on upload' : 'reference unknown';
+  headingRef = compass.headingRef();
+  if ($('compass-error').hidden === false) $('compass-error').hidden = true;
+
+  paint('heading-ref', headingRef === 'true' ? 'true north'
+    : headingRef === 'magnetic' ? 'magnetic north — corrected on upload'
+      : 'no north reference — this phone cannot give a bearing');
+
+  // A relative frame measures how far the phone has turned from wherever it
+  // started. It is not a bearing, and recording it as one puts a fix in the
+  // wrong place with nothing to show for it.
+  if (!compass.hasNorthReference() && !noReferenceWarned) {
+    noReferenceWarned = true;
+    showMessage($('bearing-msg'),
+      'This phone is not reporting a compass heading, only how far it has turned, so the '
+      + 'number on screen is not a bearing. Take the bearing with a handheld compass and '
+      + 'type it in instead.', 'error', 15000);
+  }
+}
+
+/** Forget the frame, the filter and everything painted from them. */
+function resetCompassState() {
+  compass.reset();
+  renderAngle = null;
+  lastFrameTime = null;
+  displayedBearing = null;
+  lastSteadyCheck = 0;
 }
 
 async function startCompass() {
   $('compass-start').hidden = true;
   $('compass').hidden = false;
   drawRose($('compass-canvas'));
-  sensorHeading = null;
-  renderAngle = null;
-  lastFrameTime = null;
-  filterX = null;
-  filterY = null;
-  samples = [];
+  resetCompassState();
   calibrationWarned = false;
+  noReferenceWarned = false;
 
   const attach = () => {
+    // Both are registered on purpose: this is how we discover whether the
+    // phone has an absolute frame at all. compass.handle() then picks one and
+    // discards the other — see static/compass.js. Feeding both into the filter
+    // is the bug that made the needle unusable.
     window.addEventListener('deviceorientationabsolute', onOrientation, true);
     window.addEventListener('deviceorientation', onOrientation, true);
     compassAttached = true;
     rafId = requestAnimationFrame(renderLoop);
-    setTimeout(() => { if (sensorHeading === null) $('compass-error').hidden = false; }, 3000);
+    setTimeout(() => { if (compass.heading === null) $('compass-error').hidden = false; }, 3000);
   };
 
   if (typeof DeviceOrientationEvent !== 'undefined'
@@ -821,12 +807,7 @@ function stopCompass() {
     window.removeEventListener('deviceorientation', onOrientation, true);
     compassAttached = false;
   }
-  sensorHeading = null;
-  renderAngle = null;
-  lastFrameTime = null;
-  filterX = null;
-  filterY = null;
-  samples = [];
+  resetCompassState();
   $('compass-rose').style.transform = 'rotate(0deg)';
   $('compass').hidden = true;
   $('compass-start').hidden = false;
@@ -834,26 +815,36 @@ function stopCompass() {
 }
 
 function lockBearing() {
-  const window = recentSamples();
-  if (renderAngle === null || window.length < 4) {
+  // Averaged over the window, not whatever instant the thumb landed on: the
+  // press itself often nudges the phone.
+  const reading = compass.lock(Date.now());
+  if (renderAngle === null || !reading || reading.count < 4) {
     showMessage($('bearing-msg'), 'The compass has not settled yet. Give it a moment.', 'warn', 5000);
     return;
   }
 
-  // Lock the average of the last second or so, not whatever instant the thumb
-  // happened to land on. Averaging removes most of the residual noise, and the
-  // press itself often nudges the phone.
-  const { steady, spread } = compassSteadiness();
-  const locked = Math.round(circularMean(window.map((sample) => sample.heading))) % 360;
+  const { heading: locked, count, steady, spread } = reading;
+
+  // Without a north reference the number is how far the phone has turned since
+  // the app opened. Putting that in the bearing field invites someone to save
+  // it, and a bearing that is wrong by an unknown constant is worse than no
+  // bearing at all — it produces a confident fix in the wrong place.
+  if (!compass.hasNorthReference()) {
+    showMessage($('bearing-msg'),
+      'This phone has no north reference, so there is nothing to lock — the compass only knows '
+      + 'how far it has turned since the app opened. Take the bearing with a handheld compass '
+      + 'and type it into the field below.', 'error', 15000);
+    return;
+  }
 
   $('bearing').value = locked;
   state.bearing = { value: locked, ref: headingRef };
   clearFieldErrors();
 
-  const reference = headingRef === 'true' ? 'true' : headingRef === 'magnetic' ? 'magnetic' : 'unknown reference';
+  const reference = headingRef === 'true' ? 'true' : 'magnetic';
   if (steady) {
     showMessage($('bearing-msg'),
-      `Locked ${locked}° (${reference}), averaged over ${window.length} readings.`, 'ok', 5000);
+      `Locked ${locked}° (${reference}), averaged over ${count} readings.`, 'ok', 5000);
   } else {
     showMessage($('bearing-msg'),
       `Locked ${locked}° (${reference}), but the compass was still moving ±${spread.toFixed(0)}°. `

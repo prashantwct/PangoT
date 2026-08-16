@@ -193,6 +193,15 @@ Each reading stores which frame it came from, the declination applied (World
 Magnetic Model, via `pygeomag`), and both the raw and corrected bearing — so a
 model change can be re-applied later without losing the original observation.
 
+**Which sensor.** A phone can report orientation in more than one frame at once,
+and they do not agree. `static/compass.js` picks exactly one and discards the
+rest — true north, else magnetic, else nothing usable. See the header of that
+file; feeding two frames into one filter is what made the needle unreadable in
+the field, and no amount of smoothing fixes it. A phone with only a *relative*
+frame knows how far it has turned, not which way it is pointing: the app says so
+and refuses to lock a bearing from it, because a bearing wrong by an unknown
+constant produces a confident fix in the wrong place.
+
 **Solve.** Least squares over the bearing lines. Because each direction is a
 unit vector, each row's residual is exactly the perpendicular distance from the
 solution to that bearing line, in metres.
@@ -227,6 +236,7 @@ geodesy.py         Projection, grid convergence, magnetic declination
 validation.py      Request payload validation
 auth.py            Coordinator sessions and field-device tokens
 static/app.js      Field app
+static/compass.js  Which orientation sensor to trust, and the smoothing
 static/triangulate.js  The solve again, in JS, for offline use
 static/dashboard.js  Mission control
 sw.js              Service worker (offline)

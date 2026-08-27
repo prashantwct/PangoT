@@ -242,3 +242,27 @@ def test_a_bad_bearing_added_to_a_round_does_not_destroy_its_fix(app, field):
 
     assert [f.id for f in current_fixes()] == [before]
     assert response.get_json()["results"][0]["kept_previous_fix"] is True
+
+
+def test_the_exports_identify_which_round_each_row_belongs_to(app, field, coordinator):
+    """Four fixes for one animal in one session are otherwise indistinguishable
+    in the CSV, and the bearings cannot be joined back to their fix."""
+    import csv
+    import io
+
+    for target, minutes in NIGHT:
+        field.post("/sync", round_of_bearings(target, minutes))
+
+    fixes = list(csv.DictReader(io.StringIO(
+        coordinator.get("/download_fixes").get_data(as_text=True))))
+    bearings = list(csv.DictReader(io.StringIO(
+        coordinator.get("/download_csv").get_data(as_text=True))))
+
+    assert len(fixes) == 4
+    assert len({row["event_started_at"] for row in fixes}) == 4
+    assert all(row["event_started_at"] for row in bearings)
+
+    # Every bearing joins to exactly one fix on (session, animal, round).
+    keys = {(f["group_id"], f["pango_id"], f["event_started_at"]) for f in fixes}
+    for row in bearings:
+        assert (row["group_id"], row["pango_id"], row["event_started_at"]) in keys

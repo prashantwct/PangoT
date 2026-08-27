@@ -825,9 +825,9 @@ def _register_routes(app):  # noqa: C901 - route table, flat by nature
     def download_csv():
         rows = RawBearing.query.order_by(RawBearing.timestamp).all()
         header = [
-            "reading_id", "group_id", "pango_id", "observer", "device_id",
-            "obs_lat", "obs_lon", "gps_accuracy", "bearing", "heading_ref",
-            "declination_deg", "bearing_true", "timestamp",
+            "reading_id", "group_id", "pango_id", "event_started_at", "observer",
+            "device_id", "obs_lat", "obs_lon", "gps_accuracy", "bearing",
+            "heading_ref", "declination_deg", "bearing_true", "timestamp",
         ]
         return _csv_response(rows, header, "pangolin_raw_bearings.csv")
 
@@ -835,9 +835,13 @@ def _register_routes(app):  # noqa: C901 - route table, flat by nature
     @requires_coordinator
     def download_fixes():
         rows = _current_fixes_query().order_by(CalculatedFix.timestamp).all()
+        # event_started_at identifies the round. Without it a session with
+        # several rounds on one animal exports as rows that look like
+        # duplicates, and the bearings CSV cannot be joined back to its fix.
         header = [
-            "group_id", "pango_id", "calc_lat", "calc_lon", "n_bearings",
-            "crossing_angle_deg", "rms_error_m", "quality", "note", "timestamp",
+            "group_id", "pango_id", "event_started_at", "calc_lat", "calc_lon",
+            "n_bearings", "crossing_angle_deg", "rms_error_m", "quality", "note",
+            "timestamp",
         ]
         return _csv_response(rows, header, "pangolin_fixes.csv")
 

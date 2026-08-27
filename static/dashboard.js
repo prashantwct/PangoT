@@ -27,6 +27,14 @@ const state = {
   hasFitBounds: false,
   undo: null,
   persistentBanner: null,
+  // Fix ids already drawn at least once. A recalculated fix gets a new id, so
+  // an animal that has moved counts as new here — which is exactly right.
+  seenFixIds: new Set(),
+  // Once the coordinator has panned or zoomed themselves, the map stops
+  // following new fixes and tells them instead. Yanking the view while
+  // somebody is reading a location is worse than a notice they can ignore.
+  userMovedMap: false,
+  offscreenNotice: null,
 };
 
 // --- map -------------------------------------------------------------------
@@ -65,6 +73,38 @@ if (hasMap) {
   // Data lives in its own layer groups so redraws never touch the tile layers.
   bearingLayer = L.layerGroup().addTo(map);
   fixLayer = L.layerGroup().addTo(map);
+
+  // Distinguish the coordinator moving the map from us moving it. Leaflet
+  // fires the same events for both, so a programmatic move is announced by a
+  // deadline rather than a flag — a flag cleared on 'moveend' stays stuck when
+  // the move turns out to be a no-op.
+  map.on('movestart zoomstart', () => {
+    if (Date.now() > programmaticUntil) state.userMovedMap = true;
+  });
+
+  // A notice about off-screen fixes has served its purpose once they are on
+  // screen, however they got there.
+  map.on('moveend', () => {
+    if (state.offscreenNotice && !offscreenAmong(state.offscreenNotice.fixes).length) {
+      state.offscreenNotice = null;
+      clearBanner();
+    }
+  });
+}
+
+let programmaticUntil = 0;
+
+/** Move the map ourselves without it counting as the coordinator taking over. */
+function moveMap(run) {
+  programmaticUntil = Date.now() + 1500;   // covers the pan/zoom animation
+  run();
+}
+
+/** Which of these fixes are outside the current viewport. */
+function offscreenAmong(fixes) {
+  if (!hasMap) return [];
+  const view = map.getBounds();
+  return fixes.filter((f) => !view.contains(L.latLng(f.calc_lat, f.calc_lon)));
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -203,6 +243,12 @@ function setBanner(kind, text, actionLabel, onAction) {
 }
 
 function clearBanner() {
+  // An off-screen fix is still off screen after the next refresh, so the notice
+  // has to survive the load that would otherwise clear it.
+  if (state.offscreenNotice) {
+    showOffscreenNotice();
+    return;
+  }
   // A persistent warning (no map library) outlives a successful data load.
   if (state.persistentBanner) {
     setBanner(state.persistentBanner.kind, state.persistentBanner.text);
@@ -282,12 +328,63 @@ function render() {
     + (state.totals.fixes > fixes.length ? ` (of ${state.totals.fixes})` : '');
   $('status').appendChild(status);
 
-  // Fit once on first load. Refitting on every filter change or auto-refresh
-  // throws away the pan and zoom the coordinator just set.
-  if (hasMap && !state.hasFitBounds && bounds && bounds.isValid()) {
-    map.fitBounds(bounds, { padding: [60, 60], maxZoom: 15 });
+  if (hasMap && bounds && bounds.isValid()) followNewFixes(valid, bounds);
+}
+
+/**
+ * Keep new fixes reachable.
+ *
+ * The map used to fit its bounds once, on first load, and never again. A fix
+ * that arrived afterwards — which is the normal case, since the dashboard sits
+ * open all night — was drawn correctly and then sat outside the viewport with
+ * nothing to say so. The sidebar listed it and the map appeared not to have it.
+ *
+ * Refitting on every refresh is not the answer either: it throws away the pan
+ * and zoom the coordinator just set, in the middle of them reading it. So the
+ * map follows new fixes until they take manual control, and after that it tells
+ * them instead of moving.
+ */
+function followNewFixes(fixes, bounds) {
+  const fresh = fixes.filter((f) => !state.seenFixIds.has(f.id));
+  fixes.forEach((f) => state.seenFixIds.add(f.id));
+
+  if (!state.hasFitBounds) {
+    moveMap(() => map.fitBounds(bounds, { padding: [60, 60], maxZoom: 15 }));
     state.hasFitBounds = true;
+    return;
   }
+
+  if (!fresh.length) return;
+  const offscreen = offscreenAmong(fresh);
+  if (!offscreen.length) return;
+
+  if (!state.userMovedMap) {
+    moveMap(() => map.fitBounds(bounds, { padding: [60, 60], maxZoom: 15 }));
+    return;
+  }
+
+  state.offscreenNotice = { fixes: offscreen };
+  showOffscreenNotice();
+}
+
+function showOffscreenNotice() {
+  const fixes = state.offscreenNotice.fixes;
+  const names = [...new Set(fixes.map((f) => f.pango_id))].join(', ');
+  setBanner(
+    'info',
+    fixes.length === 1
+      ? `New fix for ${names} is off the map.`
+      : `${fixes.length} new fixes are off the map (${names}).`,
+    'Show',
+    () => {
+      moveMap(() => map.fitBounds(
+        L.latLngBounds(fixes.map((f) => [f.calc_lat, f.calc_lon])),
+        { padding: [60, 60], maxZoom: 15 },
+      ));
+      state.offscreenNotice = null;
+      clearBanner();
+    },
+  );
 }
 
 function drawBearings(raw, fixes) {
@@ -595,6 +692,8 @@ $('filter-clear').addEventListener('click', () => {
 
 $('zoom-all').addEventListener('click', () => {
   state.hasFitBounds = false;
+  state.userMovedMap = false;
+  state.offscreenNotice = null;
   render();
 });
 

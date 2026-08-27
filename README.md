@@ -269,6 +269,11 @@ Two things are deliberate:
   without destroying anyone's dark adaptation.
 - **Leaflet is vendored** in `static/vendor/leaflet/`, not loaded from a CDN, so
   the dashboard still works on a restricted network.
+- **The map follows new fixes until you take over.** A fix that arrives while
+  the dashboard is open is drawn wherever it is, which may be off screen. The
+  map re-fits to include it — until you pan or zoom yourself, after which it
+  stops moving under you and shows a **Show** notice instead. **Zoom to all**
+  hands control back.
 - **The dashboard updates live.** `/api/stream` pushes over server-sent events,
   so a new fix appears within a couple of seconds. Each open dashboard holds a
   connection, which is why the Procfile uses `--worker-class gthread`; if the

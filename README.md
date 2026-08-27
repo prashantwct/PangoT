@@ -162,11 +162,40 @@ were never calculated. The bearings are all still there, so re-solving recovers
 them:
 
 ```bash
-flask refix --dry-run     # report what would be split, change nothing
+flask refix --dry-run                      # report what would change, change nothing
+flask refix --since 2026-08-13             # only sessions with a bearing since then
 flask refix
 ```
 
-Superseded fixes are kept, as always. Nothing is deleted.
+`--since` and `--until` select which *sessions* to touch, by whether they hold
+a bearing in that window. Each selected session is then re-solved from all of
+its bearings — clustering has to see the complete history, or a round straddling
+the boundary would be split in two.
+
+Superseded fixes are kept, as always. Nothing is deleted, and running it twice
+changes nothing the second time.
+
+#### On a host with no shell
+
+Render's free tier has neither a shell nor a pre-deploy hook, so the correction
+can be run from the boot hook instead. Set these in the environment, redeploy,
+read the log, then remove them:
+
+| Variable | |
+|---|---|
+| `REFIX_ON_BOOT=dry-run` | report what would change, change nothing |
+| `REFIX_ON_BOOT=1` | apply it |
+| `REFIX_SINCE=2026-08-13` | optional window, by bearing date |
+| `REFIX_UNTIL=2026-08-27` | optional |
+
+It runs once in gunicorn's master process, after the migration and before the
+first worker, and logs what it did. A failure there never stops the app from
+starting — a correction that cannot run is not a reason to serve nothing.
+
+Rehearse with `dry-run` first. Verified end to end against a database holding a
+fortnight of sessions recorded before rounds existed: 288 bearings and 36 fixes
+became 126 fixes, each landing 0.00 m from where the animal actually was, with
+the 36 originals superseded and sessions outside the window untouched.
 
 ### Migrating the database
 

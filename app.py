@@ -14,6 +14,7 @@ import os
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 
 from flask import (
     Flask,
@@ -849,7 +850,6 @@ def _register_routes(app):  # noqa: C901 - route table, flat by nature
 def _csv_response(rows, header, filename):
     import csv
     import io
-    from datetime import datetime
 
     from models import as_utc
 
@@ -872,66 +872,166 @@ def _csv_response(rows, header, filename):
     )
 
 
+def _parse_day(value, end_of_day=False):
+    """A YYYY-MM-DD date as an aware UTC datetime."""
+    if not value:
+        return None
+    try:
+        day = datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError(f"{value!r} is not a date in YYYY-MM-DD form") from exc
+    if end_of_day:
+        day = day.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return day.replace(tzinfo=timezone.utc)
+
+
+def run_refix(since=None, until=None, dry_run=False):
+    """Re-solve sessions into rounds. Returns a report; raises nothing routine.
+
+    `since` and `until` select which sessions to touch, by whether they hold a
+    bearing in that window. Each selected session is then re-solved from *all*
+    of its bearings, not just those inside the window: clustering has to see the
+    complete history or a round straddling the boundary would be split in two.
+    """
+    selector = db.session.query(RawBearing.group_id, RawBearing.pango_id).distinct()
+    if since is not None:
+        selector = selector.filter(RawBearing.timestamp >= since)
+    if until is not None:
+        selector = selector.filter(RawBearing.timestamp <= until)
+
+    pairs = selector.order_by(RawBearing.group_id, RawBearing.pango_id).all()
+
+    window = ""
+    if since or until:
+        window = (
+            f" with a bearing between {since.date() if since else 'the start'}"
+            f" and {until.date() if until else 'now'}"
+        )
+
+    if not pairs:
+        return {
+            "pairs": 0, "split": 0, "before": 0, "after": 0, "dry_run": dry_run,
+            "lines": [f"No sessions found{window} — nothing to do."],
+        }
+
+    before = _current_fixes_query().count()
+    lines = []
+    split = 0
+
+    for group_id, pango_id in pairs:
+        readings = (
+            RawBearing.query.filter_by(group_id=group_id, pango_id=pango_id)
+            .order_by(RawBearing.timestamp)
+            .all()
+        )
+        rounds = cluster_events(readings)
+        if len(rounds) > 1:
+            split += 1
+            lines.append(
+                f"  {group_id} / {pango_id}: {len(readings)} bearings -> {len(rounds)} rounds"
+            )
+        if not dry_run:
+            _recompute(group_id, pango_id)
+
+    if dry_run:
+        db.session.rollback()
+        lines.append(
+            f"\nDry run — nothing changed. {split} of {len(pairs)} session/animal"
+            f" pairs{window} would be split into rounds."
+        )
+        return {
+            "pairs": len(pairs), "split": split, "before": before, "after": before,
+            "dry_run": True, "lines": lines,
+        }
+
+    db.session.commit()
+    after = _current_fixes_query().count()
+    lines.append(
+        f"\nRe-solved {len(pairs)} session/animal pairs{window};"
+        f" {split} were split into rounds."
+        f"\nCurrent fixes: {before} -> {after}."
+    )
+    return {
+        "pairs": len(pairs), "split": split, "before": before, "after": after,
+        "dry_run": False, "lines": lines,
+    }
+
+
+def run_boot_refix(app, db_, logger_):
+    """Run `refix` once at boot, when REFIX_ON_BOOT asks for it.
+
+    Render's free tier has no shell and no pre-deploy hook, so this is the only
+    way to run a one-off correction there. It is deliberately opt-in by
+    environment variable, reports what it did to the log, and never stops the
+    app from starting — a correction that fails is not a reason to serve
+    nothing.
+
+        REFIX_ON_BOOT=dry-run   report only
+        REFIX_ON_BOOT=1         apply
+        REFIX_SINCE=2026-08-13  optional window, by bearing date
+        REFIX_UNTIL=2026-08-27
+
+    Re-running it is harmless: a round whose fix is already correct is left
+    alone. Remove the variable once the log shows what you wanted.
+    """
+    config = app.config["PANGOT"]
+    setting = (config.refix_on_boot or "").strip().lower()
+    if setting in ("", "0", "false", "no"):
+        return None
+
+    dry_run = setting in ("dry-run", "dry_run", "dryrun", "report")
+
+    try:
+        report = run_refix(
+            since=_parse_day(config.refix_since),
+            until=_parse_day(config.refix_until, end_of_day=True),
+            dry_run=dry_run,
+        )
+    except Exception:
+        db_.session.rollback()
+        logger_.exception("REFIX_ON_BOOT failed; starting anyway with data unchanged.")
+        return None
+
+    logger_.info("REFIX_ON_BOOT (%s):", "dry run" if dry_run else "applying")
+    for line in report["lines"]:
+        for part in line.splitlines():
+            if part.strip():
+                logger_.info("  %s", part)
+    if not dry_run:
+        logger_.info("Remove REFIX_ON_BOOT from the environment now that it has run.")
+    return report
+
+
 def _register_cli(app):
     """`flask users ...` — account management without needing the web UI."""
     import click
 
     @app.cli.command("refix")
     @click.option("--dry-run", is_flag=True, help="Report what would change, change nothing.")
-    def refix_command(dry_run):
-        """Re-solve every session, splitting its bearings into rounds.
+    @click.option("--since", help="Only sessions with a bearing on or after this date (YYYY-MM-DD).")
+    @click.option("--until", help="Only sessions with a bearing on or before this date (YYYY-MM-DD).")
+    def refix_command(dry_run, since, until):
+        """Re-solve sessions, splitting their bearings into rounds.
 
-        Sessions recorded before rounds existed hold one fix built from every
-        bearing for that animal. Where the team took several rounds without
-        starting a new session, that fix is a blend of positions the animal was
-        never at, and the real ones were never calculated. The bearings are all
-        still there, so re-solving recovers them.
+        Sessions recorded before rounds existed hold at most one fix per animal,
+        built from every bearing for it. Where the team took several rounds
+        without starting a new session, the later ones were never calculated.
+        The bearings are all still there, so re-solving recovers them.
 
-        Superseded fixes are left in place, as always. Nothing is deleted.
+        Superseded fixes are left in place, as always. Nothing is deleted, and
+        running it twice changes nothing the second time.
         """
-        pairs = (
-            db.session.query(RawBearing.group_id, RawBearing.pango_id)
-            .distinct()
-            .order_by(RawBearing.group_id, RawBearing.pango_id)
-            .all()
-        )
-
-        if not pairs:
-            click.echo("No bearings recorded — nothing to do.")
-            return
-
-        before = _current_fixes_query().count()
-        split = 0
-
-        for group_id, pango_id in pairs:
-            readings = (
-                RawBearing.query.filter_by(group_id=group_id, pango_id=pango_id)
-                .order_by(RawBearing.timestamp)
-                .all()
+        try:
+            report = run_refix(
+                since=_parse_day(since),
+                until=_parse_day(until, end_of_day=True),
+                dry_run=dry_run,
             )
-            events = cluster_events(readings)
-            if len(events) > 1:
-                split += 1
-                click.echo(
-                    f"  {group_id} / {pango_id}: {len(readings)} bearings"
-                    f" -> {len(events)} rounds"
-                )
-            if not dry_run:
-                _recompute(group_id, pango_id)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
 
-        if dry_run:
-            db.session.rollback()
-            click.echo(
-                f"\nDry run. {split} of {len(pairs)} session/animal pairs would be split."
-            )
-            return
-
-        db.session.commit()
-        after = _current_fixes_query().count()
-        click.echo(
-            f"\nRe-solved {len(pairs)} session/animal pairs; {split} were split "
-            f"into rounds.\nCurrent fixes: {before} -> {after}."
-        )
+        for line in report["lines"]:
+            click.echo(line)
 
     @app.cli.command("deploy")
     def deploy_command():

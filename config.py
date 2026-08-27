@@ -89,6 +89,18 @@ class Config:
         # Set AUTO_MIGRATE=0 to take manual control.
         self.auto_migrate = env.get("AUTO_MIGRATE", "1").strip().lower() not in ("0", "false", "no")
 
+        # A one-off correction, run once at boot. Opt-in, because it rewrites
+        # which fixes are current. "dry-run" reports without changing anything.
+        # See run_boot_refix in app.py.
+        self.refix_on_boot = env.get("REFIX_ON_BOOT", "").strip()
+        # Named explicitly rather than keeping the whole environment on this
+        # object. Config is not serialised anywhere today, but holding
+        # SECRET_KEY, the database password and the admin hash on an attribute
+        # is one careless debug endpoint away from being published — and this
+        # repository has done that once already.
+        self.refix_since = env.get("REFIX_SINCE", "").strip()
+        self.refix_until = env.get("REFIX_UNTIL", "").strip()
+
         # --- Map ---
         self.mapbox_token = env.get("MAPBOX_TOKEN", "").strip()
 

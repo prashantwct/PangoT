@@ -99,11 +99,14 @@ You do not have to start a new session for each round of bearings. Rounds are
 worked out from the readings themselves:
 
 - a gap of more than 20 minutes starts a new round;
-- so does an observer **returning to a station** they have already used in this
-  round — teams walk a circuit of fixed stations, and coming back to one means
-  the next round has begun, however little time has passed;
-- otherwise, the same observer appearing twice starts a new round only if the
-  two readings are more than 3 minutes apart.
+- so does a **station being occupied twice**. Two teams stand at two fixed
+  positions and shoot together; a second reading from a station already used
+  means the next round has begun, however little time has passed.
+
+Note what is *not* a rule: the same observer name appearing twice. Teams share
+a login, so two teams at two stations record under the same initials — under a
+shared login that is the ordinary shape of one round, not evidence of two. An
+earlier version split on it and cost real fixes.
 
 Each round gets its own fix, so a night of four rounds on one animal gives four
 positions, not one. This used to depend on someone remembering to start a fresh

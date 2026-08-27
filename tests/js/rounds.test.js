@@ -63,24 +63,28 @@ test('the gap is measured between neighbours, not from the start', () => {
   assert.strictEqual(rounds.length, 1);
 });
 
-// --- rule 2: an observer appearing twice ------------------------------------
+// --- rule 2: a station occupied twice ---------------------------------------
 
-test('the same observer twice starts a new round', () => {
+test('two rounds ten minutes apart are split by their stations', () => {
   const rounds = R.clusterRounds([
-    reading(0, 'MK'), reading(1, 'PD'), reading(10, 'MK'), reading(11, 'PD'),
+    reading(0, 'MK', STATION_A), reading(1, 'PD', STATION_B),
+    reading(10, 'MK', STATION_A), reading(11, 'PD', STATION_B),
   ]);
   assert.strictEqual(rounds.length, 2);
   assert.deepStrictEqual(observers(rounds), [['MK', 'PD'], ['MK', 'PD']]);
 });
 
-test('an observer reshooting immediately stays in the same round', () => {
-  const rounds = R.clusterRounds([reading(0, 'MK'), reading(1, 'MK'), reading(2, 'PD')]);
+test('the same login at two stations is one round', () => {
+  // Two teams share a login, so the observer name identifies nobody. An
+  // earlier rule split these after three minutes and cost real fixes.
+  const rounds = R.clusterRounds([
+    reading(0, 'BB', STATION_A), reading(9, 'BB', STATION_B),
+  ]);
   assert.strictEqual(rounds.length, 1);
-  assert.deepStrictEqual(observers(rounds), [['MK', 'MK', 'PD']]);
 });
 
-test('an unnamed observer falls back to the time rule', () => {
-  const rounds = R.clusterRounds([reading(0, null), reading(5, null), reading(9, null)]);
+test('readings with no position cannot be split inside the window', () => {
+  const rounds = R.clusterRounds([reading(0, 'MK'), reading(1, 'MK'), reading(2, 'PD')]);
   assert.strictEqual(rounds.length, 1);
 });
 

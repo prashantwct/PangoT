@@ -18,25 +18,31 @@ So the split is derived from the readings instead of trusted to a button:
    by radio and shoot within a couple of minutes of each other; moving to new
    positions takes far longer.
 
-2. An observer returning to a position they have already used in this event
-   starts a new one. Teams work fixed stations: one person walks a circuit,
-   takes a bearing at each, then walks it again. Coming back to a station means
-   the next round has begun, however little time has passed.
-
-3. Otherwise, an observer appearing twice starts a new event only if the two
-   readings are more than ``repeat_window_minutes`` apart. Within that window it
-   is one person moving between stations inside a single round.
+2. A reading from a station already used in this event starts a new one. Two
+   teams stand at two fixed stations and shoot together; when a station is
+   occupied a second time, the next round has begun, however little time has
+   passed.
 
 Rule 2 is what real data needed. In an export of 1450 field bearings, rounds
-taken back to back — one observer shuttling between two stations, then
-repeating the circuit two minutes later — were being merged into rounds of four
-bearings that crossed at 5° and produced no fix at all. Splitting on the
-returned-to position turns each of those into two fixes crossing at 80°+.
-Across that export it recovers 71 positions that time alone could not.
+taken back to back — both stations shooting, then both shooting again two
+minutes later — were merged into rounds of four bearings that crossed at 5° and
+produced no fix at all. Splitting on the reoccupied station turns each of those
+into two fixes crossing at 80°+.
 
-Rules 1 and 3 remain the backstop for teams who do not work fixed stations.
+WHY THERE IS NO RULE ABOUT THE SAME OBSERVER TWICE
 
-All three prefer splitting. Splitting a real event yields "waiting for the
+There was one: an observer appearing twice more than three minutes apart began
+a new event. It rested on the observer field naming a person, and it does not.
+Teams share a login — two teams standing at two stations record under the same
+initials — so "the same observer twice" is the *normal* shape of a single
+round, not evidence of a second one. On that export the rule split 18 rounds
+whose two teams were more than three minutes apart in shooting, costing 6
+fixes and leaving 27 bearings stranded alone in rounds of one.
+
+Rule 2 covers what that rule was meant to catch, and covers it on evidence the
+app actually has. Position is recorded per reading and is never shared.
+
+Both rules prefer splitting. Splitting a real event yields "waiting for the
 second observer", which is visible and recoverable; merging two events yields a
 confident fix in a place the animal never was.
 """
@@ -48,13 +54,10 @@ from geodesy import distance_m
 # walking to a new position always lands in a new event.
 DEFAULT_GAP_MINUTES = 20
 
-# One observer moving between stations, still the same round.
-DEFAULT_REPEAT_WINDOW_MINUTES = 3
-
-# Back within this distance of a position already used in this round means the
-# observer has returned to a station, so the next round has started. Matches
-# triangulation.MIN_BASELINE_M: closer than this contributes no new geometry
-# anyway, so treating it as the same spot loses nothing.
+# A reading within this distance of one already in the round is from the same
+# station, so the station has been occupied twice and a new round has started.
+# Matches triangulation.MIN_BASELINE_M: closer than this contributes no new
+# geometry anyway, so treating it as the same station loses nothing.
 DEFAULT_SAME_SPOT_M = 25.0
 
 
@@ -81,21 +84,19 @@ def _same_spot(a, b, tolerance_m):
 def cluster_events(
     readings,
     gap_minutes=DEFAULT_GAP_MINUTES,
-    repeat_window_minutes=DEFAULT_REPEAT_WINDOW_MINUTES,
     same_spot_m=DEFAULT_SAME_SPOT_M,
 ):
     """Group readings into events, oldest first.
 
-    ``readings`` need only carry ``timestamp`` and ``observer``. They are
-    sorted here rather than trusted to arrive in order, because two phones
-    upload independently.
+    ``readings`` need only carry ``timestamp`` and a position (``obs_lat`` /
+    ``obs_lon``). They are sorted here rather than trusted to arrive in order,
+    because two phones upload independently.
     """
     ordered = sorted(readings, key=_at)
     if not ordered:
         return []
 
     gap = timedelta(minutes=gap_minutes)
-    repeat_window = timedelta(minutes=repeat_window_minutes)
 
     events = [[ordered[0]]]
 
@@ -106,16 +107,11 @@ def cluster_events(
             events.append([reading])
             continue
 
-        # An observer with no name cannot be matched against, so rules 2 and 3
-        # cannot apply. Falling back to rule 1 alone is the safe reading.
-        if reading.observer:
-            earlier = [r for r in current if r.observer == reading.observer]
-            if earlier:
-                returned = any(_same_spot(reading, r, same_spot_m) for r in earlier)
-                lapsed = _at(reading) - _at(earlier[-1]) > repeat_window
-                if returned or lapsed:
-                    events.append([reading])
-                    continue
+        # Deliberately not filtered by observer. Two teams share a login, so
+        # the name says nothing about who stood where; the station does.
+        if any(_same_spot(reading, r, same_spot_m) for r in current):
+            events.append([reading])
+            continue
 
         current.append(reading)
 

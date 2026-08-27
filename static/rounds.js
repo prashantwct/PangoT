@@ -1,7 +1,8 @@
 /* Splitting readings into rounds, on the phone.
  *
  * A port of events.py. Keep the two in step: the rules are stated once, in
- * that file's header, and tests/js/rounds.test.js checks this side against the
+ * that file's header — including why there is no rule about the same observer
+ * appearing twice — and tests/js/rounds.test.js checks this side against the
  * same cases tests/test_events.py checks the server side against.
  *
  * The field app needs this for the same reason the server does. Its provisional
@@ -19,7 +20,6 @@
   'use strict';
 
   const GAP_MS = 20 * 60 * 1000;
-  const REPEAT_WINDOW_MS = 3 * 60 * 1000;
   // Matches events.DEFAULT_SAME_SPOT_M and triangulation.MIN_BASELINE_M.
   const SAME_SPOT_M = 25;
 
@@ -39,7 +39,6 @@
   /** Group readings into rounds, oldest first. */
   function clusterRounds(readings, options) {
     const gap = (options && options.gapMs) || GAP_MS;
-    const repeatWindow = (options && options.repeatWindowMs) || REPEAT_WINDOW_MS;
     const sameSpotM = (options && options.sameSpotM) || SAME_SPOT_M;
 
     const ordered = readings.slice().sort((a, b) => at(a) - at(b));
@@ -55,18 +54,12 @@
         continue;
       }
 
-      if (reading.observer) {
-        const earlier = current.filter((r) => r.observer === reading.observer);
-        const last = earlier[earlier.length - 1];
-        if (last) {
-          // Back at a station already used this round: the next round has
-          // begun, however little time has passed. See events.py.
-          const returned = earlier.some((r) => sameSpot(reading, r, sameSpotM));
-          if (returned || at(reading) - at(last) > repeatWindow) {
-            rounds.push([reading]);
-            continue;
-          }
-        }
+      // A station occupied twice means the next round has begun, however
+      // little time has passed. Deliberately not filtered by observer: two
+      // teams share a login, so the name says nothing about who stood where.
+      if (current.some((r) => sameSpot(reading, r, sameSpotM))) {
+        rounds.push([reading]);
+        continue;
       }
 
       current.push(reading);
@@ -81,5 +74,5 @@
     return rounds.length ? rounds[rounds.length - 1] : [];
   }
 
-  return { clusterRounds, latestRound, GAP_MS, REPEAT_WINDOW_MS, SAME_SPOT_M };
+  return { clusterRounds, latestRound, GAP_MS, SAME_SPOT_M };
 }));

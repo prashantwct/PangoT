@@ -87,30 +87,38 @@ def test_the_gap_is_measured_between_neighbours_not_from_the_start():
     assert len(events) == 1
 
 
-# --- rule 2: an observer appearing twice ------------------------------------
+# --- rule 2: a station occupied twice ---------------------------------------
 
 
-def test_the_same_observer_twice_starts_a_new_event():
-    """Two rounds only ten minutes apart — the time gap alone would merge them."""
+def test_two_rounds_ten_minutes_apart_are_split_by_their_stations():
+    """The time gap alone would merge these; the reoccupied stations do not."""
     events = cluster_events([
-        Reading(0, "MK"), Reading(1, "PD"),
-        Reading(10, "MK"), Reading(11, "PD"),
+        Reading(0, "MK", STATION_A), Reading(1, "PD", STATION_B),
+        Reading(10, "MK", STATION_A), Reading(11, "PD", STATION_B),
     ])
 
     assert len(events) == 2
     assert observers(events) == [["MK", "PD"], ["MK", "PD"]]
 
 
-def test_an_observer_reshooting_immediately_stays_in_the_same_event():
-    """One person stepping a few paces and taking a second bearing."""
-    events = cluster_events([Reading(0, "MK"), Reading(1, "MK"), Reading(2, "PD")])
+def test_the_same_login_at_two_stations_is_one_round():
+    """Two teams share a login, so the observer name identifies nobody.
+
+    This is why there is no rule about an observer appearing twice: under a
+    shared login that is the normal shape of a single round. An earlier rule
+    split these after three minutes, which cost real fixes on real data.
+    """
+    events = cluster_events([
+        Reading(0, "BB", STATION_A),
+        Reading(9, "BB", STATION_B),      # the other team, nine minutes later
+    ])
+
     assert len(events) == 1
-    assert observers(events) == [["MK", "MK", "PD"]]
 
 
-def test_an_unnamed_observer_falls_back_to_the_time_rule():
-    """Rule 2 cannot apply without a name; it must not split on that alone."""
-    events = cluster_events([Reading(0, None), Reading(5, None), Reading(9, None)])
+def test_readings_with_no_position_cannot_be_split_inside_the_window():
+    """Nothing left to go on but the clock, and the clock says one round."""
+    events = cluster_events([Reading(0, "MK"), Reading(1, "MK"), Reading(2, "PD")])
     assert len(events) == 1
 
 

@@ -190,6 +190,21 @@ the boundary would be split in two.
 Superseded fixes are kept, as always. Nothing is deleted, and running it twice
 changes nothing the second time.
 
+#### From the dashboard
+
+**Recalculate rounds**, in the dashboard header, is the ordinary way to run
+this. Admin sign-in only: it rewrites which fixes are current across many
+sessions at once, where the other fix controls touch one at a time.
+
+**Preview** reports what would change and writes nothing. **Apply** stays
+disabled until a preview has run for the window on screen, and changing the
+window clears the preview — what was reported no longer describes what Apply
+would do.
+
+The preview reports the change, not the grouping. Once a window has been
+corrected the grouping looks the same but nothing would move, and only the
+first of those answers the question being asked.
+
 #### On a host with no shell
 
 Render's free tier has neither a shell nor a pre-deploy hook, so the correction

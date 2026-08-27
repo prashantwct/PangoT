@@ -705,6 +705,104 @@ $('zoom-all').addEventListener('click', () => {
   render();
 });
 
+// --- recalculate rounds ----------------------------------------------------
+//
+// Apply stays disabled until a preview has run for the current window, so the
+// report is always read before anything is written. Changing the window clears
+// the preview: what was on screen no longer describes what Apply would do.
+
+let refixPreviewedFor = null;
+
+function refixWindow() {
+  return $('refix-since').value || null;
+}
+
+function refixStatus(kind, text) {
+  const box = $('refix-status');
+  box.className = `msg ${kind}`;
+  box.textContent = text;
+  box.hidden = false;
+}
+
+function showRefixReport(lines) {
+  const report = $('refix-report');
+  report.textContent = lines.join('\n');
+  report.hidden = !lines.length;
+}
+
+function resetRefixPreview() {
+  refixPreviewedFor = null;
+  $('refix-apply').disabled = true;
+  $('refix-report').hidden = true;
+  $('refix-status').hidden = true;
+}
+
+async function runRefix(apply) {
+  const since = refixWindow();
+  const buttons = [$('refix-preview'), $('refix-apply')];
+  buttons.forEach((b) => { b.disabled = true; });
+  refixStatus('info', apply ? 'Recalculating…' : 'Checking…');
+
+  try {
+    const response = await apiFetch('/api/refix', {
+      method: 'POST',
+      body: JSON.stringify({ apply, since }),
+    });
+    const body = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      refixStatus('error', body.message
+        || (response.status === 403
+          ? 'Recalculating rounds needs an admin account.'
+          : `The server returned ${response.status}.`));
+      return;
+    }
+
+    showRefixReport(body.lines || []);
+
+    if (apply) {
+      refixStatus('ok', `Done. ${body.before} fixes became ${body.after}.`);
+      resetRefixPreview();
+      $('refix-report').hidden = false;
+      showRefixReport(body.lines || []);
+      state.hasFitBounds = false;      // the map should show what is there now
+      await loadData({ quiet: true });
+    } else {
+      refixPreviewedFor = since;
+      const delta = body.after - body.before;
+      // The question is what would change, not how the bearings group: after a
+      // correction the grouping looks identical but nothing would move.
+      refixStatus(delta ? 'info' : 'ok', delta
+        ? `Would recalculate ${body.split} of ${body.pairs} session/animal pairs`
+          + ` and take the fix count from ${body.before} to ${body.after}.`
+          + ' Nothing has changed yet.'
+        : 'Everything in this window is already solved by round. Nothing to apply.');
+      $('refix-apply').disabled = delta === 0;
+    }
+  } catch (err) {
+    console.error(err);
+    refixStatus('error', 'Could not reach the server. Nothing was changed.');
+  } finally {
+    $('refix-preview').disabled = false;
+    if (!apply && refixPreviewedFor === null) $('refix-apply').disabled = true;
+  }
+}
+
+$('refix-open').addEventListener('click', () => {
+  resetRefixPreview();
+  $('refix-dialog').showModal();
+});
+$('refix-close').addEventListener('click', () => $('refix-dialog').close());
+$('refix-since').addEventListener('change', resetRefixPreview);
+$('refix-preview').addEventListener('click', () => runRefix(false));
+$('refix-apply').addEventListener('click', () => {
+  if (refixPreviewedFor !== refixWindow()) {
+    refixStatus('warn', 'Preview this window first.');
+    return;
+  }
+  runRefix(true);
+});
+
 $('refresh').addEventListener('click', () => loadData());
 $('edit-save').addEventListener('click', saveEdit);
 $('edit-cancel').addEventListener('click', () => $('edit-dialog').close());

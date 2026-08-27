@@ -974,17 +974,17 @@ def run_boot_refix(app, db_, logger_):
     Re-running it is harmless: a round whose fix is already correct is left
     alone. Remove the variable once the log shows what you wanted.
     """
-    setting = (app.config["PANGOT"].refix_on_boot or "").strip().lower()
+    config = app.config["PANGOT"]
+    setting = (config.refix_on_boot or "").strip().lower()
     if setting in ("", "0", "false", "no"):
         return None
 
     dry_run = setting in ("dry-run", "dry_run", "dryrun", "report")
-    env = app.config["PANGOT"].env
 
     try:
         report = run_refix(
-            since=_parse_day(env.get("REFIX_SINCE")),
-            until=_parse_day(env.get("REFIX_UNTIL"), end_of_day=True),
+            since=_parse_day(config.refix_since),
+            until=_parse_day(config.refix_until, end_of_day=True),
             dry_run=dry_run,
         )
     except Exception:

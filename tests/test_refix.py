@@ -235,7 +235,7 @@ def test_the_boot_switch_applies_the_window_from_the_environment(two_weeks):
 
     config = two_weeks.config["PANGOT"]
     config.refix_on_boot = "1"
-    config.env["REFIX_SINCE"] = (TODAY - timedelta(days=14)).strftime("%Y-%m-%d")
+    config.refix_since = (TODAY - timedelta(days=14)).strftime("%Y-%m-%d")
 
     run_boot_refix(two_weeks, db, logger_=_NullLog())
 
@@ -248,7 +248,7 @@ def test_a_broken_date_does_not_stop_the_app_booting(two_weeks):
 
     config = two_weeks.config["PANGOT"]
     config.refix_on_boot = "1"
-    config.env["REFIX_SINCE"] = "the fourteenth"
+    config.refix_since = "the fourteenth"
 
     assert run_boot_refix(two_weeks, db, logger_=_NullLog()) is None
     assert current() == []          # and nothing half-applied

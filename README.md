@@ -76,7 +76,9 @@ real).
 ## How a tracking session works
 
 Triangulation needs at least two bearings on the same animal, taken from
-positions well apart, and they must be recorded against the **same session**.
+positions well apart, and recorded against the **same session**. One session
+covers a whole night; separate rounds within it are worked out automatically
+(see below).
 
 1. One observer opens the field app and taps the session button (`⇄`) →
    **Start a new session**. A six-character code appears in the header, e.g.
@@ -90,6 +92,25 @@ positions well apart, and they must be recorded against the **same session**.
 Both phones show the calculated position afterwards, with a bearing and
 distance to walk from wherever the holder is standing — that part works
 offline once the fix is known.
+
+### Several rounds in one session
+
+You do not have to start a new session for each round of bearings. Rounds are
+worked out from the readings themselves: a gap of more than 20 minutes starts a
+new one, and so does the same observer taking a second bearing more than 3
+minutes after their first.
+
+Each round gets its own fix, so a night of four rounds on one animal gives four
+positions, not one. This used to depend on someone remembering to start a fresh
+session, and when it was missed the result was bad in a way nobody could see:
+eight bearings from four rounds do not intersect anywhere, because the animal
+moved between them, so every solve after the first was refused for a grazing
+crossing angle and the session kept round one's fix all night.
+
+The rules are in `events.py`, ported to the phone in `static/rounds.js`, and
+they prefer splitting. A round split in error reads "waiting for the second
+observer", which is visible and recoverable. Two rounds merged gives a
+confident fix in a place the animal never was.
 
 ### What makes a good fix
 
@@ -132,6 +153,20 @@ python -c "from werkzeug.security import generate_password_hash as h; print(h(in
 ```
 
 Set the result as `ADMIN_PASSWORD_HASH` and delete `ADMIN_PASSWORD`.
+
+### Recovering rounds from older data
+
+Sessions recorded before rounds existed hold at most one fix per animal. Where
+the team took several rounds without starting a new session, the later ones
+were never calculated. The bearings are all still there, so re-solving recovers
+them:
+
+```bash
+flask refix --dry-run     # report what would be split, change nothing
+flask refix
+```
+
+Superseded fixes are kept, as always. Nothing is deleted.
 
 ### Migrating the database
 
@@ -229,6 +264,7 @@ both.
 
 ```
 app.py             Factory, routes, sync orchestration, live-update stream
+events.py          Splitting a session's bearings into rounds
 config.py          Environment config, validated at startup
 models.py          SQLAlchemy models
 triangulation.py   The solve — pure, no framework
@@ -237,6 +273,7 @@ validation.py      Request payload validation
 auth.py            Coordinator sessions and field-device tokens
 static/app.js      Field app
 static/compass.js  Which orientation sensor to trust, and the smoothing
+static/rounds.js   Rounds again, in JS, for the provisional fix
 static/triangulate.js  The solve again, in JS, for offline use
 static/dashboard.js  Mission control
 sw.js              Service worker (offline)
@@ -255,6 +292,10 @@ Two things are deliberate:
 - Fixes are never destroyed. Recalculation stamps the old row `superseded_at`;
   coordinator deletion stamps `deleted_at` and is undoable. The current fix for
   an animal is the one with neither set.
+- A fix belongs to a round, identified by `event_started_at` — the time of that
+  round's first bearing. It stays the same as later bearings join the round, so
+  a re-solve recognises the fix it already made instead of replacing it. `NULL`
+  means the row predates rounds, and reads as one round per session.
 
 ---
 

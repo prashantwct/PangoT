@@ -114,6 +114,7 @@ jobs:
           node --check static/dashboard.js
           node --check static/triangulate.js
           node --check static/compass.js
+          node --check static/rounds.js
           node --check sw.js
 
       - name: Run solver tests

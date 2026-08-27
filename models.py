@@ -62,6 +62,12 @@ class RawBearing(db.Model):
     timestamp = db.Column(db.DateTime(timezone=True), index=True, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow)
 
+    # Which round of bearings this belongs to, as the time of the round's first
+    # reading. Derived from the readings by events.cluster_events, not chosen by
+    # anyone in the field — see that module for why. NULL means it predates the
+    # split, in which case the whole session counts as one event.
+    event_started_at = db.Column(db.DateTime(timezone=True), index=True)
+
     __table_args__ = (
         db.Index("ix_raw_bearings_group_pango", "group_id", "pango_id"),
     )
@@ -88,6 +94,11 @@ class CalculatedFix(db.Model):
 
     timestamp = db.Column(db.DateTime(timezone=True), default=utcnow, index=True)
 
+    # The round of bearings this fix was solved from. One animal in one session
+    # now has one fix per round rather than a single fix built from every
+    # bearing ever recorded for it.
+    event_started_at = db.Column(db.DateTime(timezone=True), index=True)
+
     # Soft lifecycle. Superseded = replaced by a newer solve for the same
     # group and animal. Deleted = removed by a coordinator, recoverable.
     superseded_at = db.Column(db.DateTime(timezone=True))
@@ -104,6 +115,7 @@ class CalculatedFix(db.Model):
     # Recompute filters on both together.
     __table_args__ = (
         db.Index("ix_calculated_fixes_group_pango", "group_id", "pango_id"),
+        db.Index("ix_calculated_fixes_event", "group_id", "pango_id", "event_started_at"),
     )
 
     @property

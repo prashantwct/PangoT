@@ -18,10 +18,18 @@ So the split is derived from the readings instead of trusted to a button:
    by radio and shoot within a couple of minutes of each other; moving to new
    positions takes far longer.
 
-2. A reading from a station already used in this event starts a new one. Two
-   teams stand at two fixed stations and shoot together; when a station is
-   occupied a second time, the next round has begun, however little time has
-   passed.
+2. A reading from a station already used in this event, *later* than the
+   reading already there, starts a new one. Two teams stand at two fixed
+   stations and shoot together; when a station is occupied again, the next
+   round has begun, however little time has passed.
+
+   "Later" matters. A phone can record one observation several times — 184 rows
+   in an export of 1450 were a repeat of an existing time, place and bearing,
+   two of them sixteen times over — each with its own reading_id, so idempotent
+   upload never saw them as duplicates. Without the requirement that time move
+   on, each copy looked like the station being reoccupied and became a round of
+   its own. It also makes round starts strictly increasing, so no two rounds
+   share an identity; see event_started_at.
 
 Rule 2 is what real data needed. In an export of 1450 field bearings, rounds
 taken back to back — both stations shooting, then both shooting again two
@@ -81,6 +89,39 @@ def _same_spot(a, b, tolerance_m):
     return distance_m(here[0], here[1], there[0], there[1]) <= tolerance_m
 
 
+def _reoccupied(reading, earlier, tolerance_m):
+    """Is this reading a station being used again, rather than a repeat record?"""
+    return any(
+        _at(reading) > _at(r) and _same_spot(reading, r, tolerance_m)
+        for r in earlier
+    )
+
+
+def distinct_observations(readings):
+    """One entry per physical observation, oldest first.
+
+    The same observation can be stored several times, each with its own
+    reading_id. Handing all of them to the solver weights that bearing line
+    once per copy, and a line repeated is a line crossing itself at 0°, which
+    the solver refuses outright. Every copy is kept in the database; they are
+    collapsed only where the geometry is worked out.
+    """
+    seen = set()
+    out = []
+    for reading in sorted(readings, key=_at):
+        position = _position(reading)
+        fingerprint = (
+            _at(reading),
+            None if position is None else (round(position[0], 7), round(position[1], 7)),
+            round(getattr(reading, "bearing_true", None) or 0.0, 6),
+        )
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        out.append(reading)
+    return out
+
+
 def cluster_events(
     readings,
     gap_minutes=DEFAULT_GAP_MINUTES,
@@ -109,7 +150,7 @@ def cluster_events(
 
         # Deliberately not filtered by observer. Two teams share a login, so
         # the name says nothing about who stood where; the station does.
-        if any(_same_spot(reading, r, same_spot_m) for r in current):
+        if _reoccupied(reading, current, same_spot_m):
             events.append([reading])
             continue
 
@@ -122,6 +163,8 @@ def event_started_at(event):
     """The identity of an event: when its first bearing was taken.
 
     Stable as later bearings arrive, which is what lets a re-solve recognise
-    the fix it already made for this event instead of replacing it.
+    the fix it already made for this event instead of replacing it. Unique
+    within a session and animal, because a round only ever begins at a reading
+    strictly later than everything in the round before it.
     """
     return min(_at(r) for r in event)

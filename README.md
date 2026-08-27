@@ -108,6 +108,13 @@ a login, so two teams at two stations record under the same initials — under a
 shared login that is the ordinary shape of one round, not evidence of two. An
 earlier version split on it and cost real fixes.
 
+The station must be occupied *later*, not merely again. A phone can store one
+observation several times, each copy with its own `reading_id`, so an idempotent
+upload never sees them as duplicates — 184 rows of a real 1450-row export were
+copies, two of them sixteen times over. Copies are kept in the database and
+collapsed only where the geometry is worked out, because a bearing line
+repeated is a line crossing itself at 0°, which the solver refuses.
+
 Each round gets its own fix, so a night of four rounds on one animal gives four
 positions, not one. This used to depend on someone remembering to start a fresh
 session, and when it was missed the result was bad in a way nobody could see:

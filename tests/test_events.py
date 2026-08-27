@@ -12,6 +12,7 @@ import pytest
 from events import (
     DEFAULT_GAP_MINUTES,
     cluster_events,
+    distinct_observations,
     event_started_at,
 )
 
@@ -25,17 +26,18 @@ START = datetime(2026, 8, 16, 18, 0, tzinfo=timezone.utc)
 class Reading:
     """Only what the clustering needs."""
 
-    def __init__(self, minutes, observer, station=None):
+    def __init__(self, minutes, observer, station=None, bearing=0.0):
         self.timestamp = START + timedelta(minutes=minutes)
         self.observer = observer
         self.obs_lat, self.obs_lon = station if station else (None, None)
+        self.bearing_true = bearing
 
     def __repr__(self):
         return f"<{self.observer} +{(self.timestamp - START).total_seconds() / 60:g}m>"
 
 
-def seconds(secs, observer, station=None):
-    return Reading(secs / 60, observer, station)
+def seconds(secs, observer, station=None, bearing=0.0):
+    return Reading(secs / 60, observer, station, bearing)
 
 
 def observers(events):
@@ -254,3 +256,74 @@ def test_the_station_tolerance_is_adjustable():
 
     assert len(cluster_events(readings, same_spot_m=25)) == 1
     assert len(cluster_events(readings, same_spot_m=150)) == 2
+
+
+# --- the same observation stored more than once -----------------------------
+#
+# A phone can save one observation several times, each copy with its own
+# reading_id, so idempotent upload never sees them as duplicates. 184 rows of
+# a real 1450-row export were copies; two observations appeared sixteen times.
+
+
+def test_a_repeated_record_is_not_a_station_being_reoccupied():
+    """Without this, every copy became a round of its own."""
+    events = cluster_events([
+        seconds(0, "BB", STATION_A),
+        seconds(0, "BB", STATION_A),      # the same observation, stored again
+        seconds(0, "BB", STATION_A),
+        seconds(36, "BB", STATION_B),
+    ])
+
+    assert len(events) == 1
+    assert len(events[0]) == 4
+
+
+def test_a_station_reoccupied_later_still_splits():
+    """The rule needs time to have moved on, and here it has."""
+    events = cluster_events([
+        seconds(0, "BB", STATION_A),
+        seconds(0, "BB", STATION_A),
+        seconds(36, "BB", STATION_B),
+        seconds(154, "BB", STATION_B),
+    ])
+
+    assert len(events) == 2
+
+
+def test_round_identities_are_unique_within_a_session():
+    """Two rounds sharing a start time made a re-solve add a second fix for the
+    same round instead of recognising the one it already had."""
+    readings = [
+        seconds(0, "BB", STATION_A), seconds(0, "BB", STATION_A),
+        seconds(36, "BB", STATION_B), seconds(36, "BB", STATION_B),
+        seconds(154, "BB", STATION_B), seconds(199, "BB", STATION_A),
+    ]
+
+    starts = [event_started_at(e) for e in cluster_events(readings)]
+
+    assert len(starts) == len(set(starts))
+    assert starts == sorted(starts)
+
+
+def test_distinct_observations_collapses_copies():
+    a = seconds(0, "BB", STATION_A, bearing=170.0)
+    same = seconds(0, "BB", STATION_A, bearing=170.0)
+    other_bearing = seconds(0, "BB", STATION_A, bearing=171.0)
+    other_place = seconds(0, "BB", STATION_B, bearing=170.0)
+    later = seconds(36, "BB", STATION_A, bearing=170.0)
+
+    kept = distinct_observations([a, same, other_bearing, other_place, later])
+
+    assert len(kept) == 4
+    assert same not in kept
+
+
+def test_distinct_observations_keeps_everything_when_nothing_repeats():
+    readings = [seconds(0, "MK", STATION_A, 10.0), seconds(36, "PD", STATION_B, 200.0)]
+    assert distinct_observations(readings) == readings
+
+
+def test_distinct_observations_is_ordered_oldest_first():
+    late = seconds(36, "PD", STATION_B, 200.0)
+    early = seconds(0, "MK", STATION_A, 10.0)
+    assert distinct_observations([late, early]) == [early, late]

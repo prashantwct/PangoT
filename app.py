@@ -44,7 +44,7 @@ from auth import (
 )
 from config import Config
 from extensions import csrf, db, migrate
-from events import cluster_events, event_started_at
+from events import cluster_events, distinct_observations, event_started_at
 from geodesy import to_true_bearing
 from models import Animal, CalculatedFix, RawBearing, User, as_utc, to_dict, utcnow
 from schema import (
@@ -253,24 +253,30 @@ def _solve_event(group_id, pango_id, readings):
     """Solve one round of bearings. Returns a per-event result dict."""
     started_at = event_started_at(readings)
 
-    if len(readings) < 2:
+    # One entry per observation. A phone can store the same one several times,
+    # each with its own reading_id; handing every copy to the solver weights
+    # that bearing line once per copy, and a line repeated crosses itself at
+    # 0°, which the solver refuses. Every copy stays in the database.
+    observations = distinct_observations(readings)
+
+    if len(observations) < 2:
         return {
             "event_started_at": started_at,
             "status": "waiting",
-            "n_bearings": len(readings),
+            "n_bearings": len(observations),
             "message": (
-                f"{pango_id}: {len(readings)} of 2 bearings"
+                f"{pango_id}: {len(observations)} of 2 bearings"
                 " — waiting for the second observer"
             ),
         }
 
     try:
-        fix = solve([Observation(r.obs_lat, r.obs_lon, r.bearing_true) for r in readings])
+        fix = solve([Observation(r.obs_lat, r.obs_lon, r.bearing_true) for r in observations])
     except TriangulationError as exc:
         return {
             "event_started_at": started_at,
             "status": "failed",
-            "n_bearings": len(readings),
+            "n_bearings": len(observations),
             "message": f"{pango_id}: {exc}",
         }
 
@@ -278,7 +284,7 @@ def _solve_event(group_id, pango_id, readings):
         "event_started_at": started_at,
         "status": "fixed",
         "fix": fix,
-        "n_bearings": len(readings),
+        "n_bearings": len(observations),
     }
 
 

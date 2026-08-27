@@ -36,6 +36,33 @@
     return d !== null && d <= tolerance;
   }
 
+  /** A station being used again, rather than one observation stored twice. */
+  function reoccupied(reading, earlier, tolerance) {
+    return earlier.some((r) => at(reading) > at(r) && sameSpot(reading, r, tolerance));
+  }
+
+  /**
+   * One entry per physical observation, oldest first.
+   *
+   * A phone can save the same observation several times, each copy with its
+   * own reading_id. Solving with every copy weights that bearing line once per
+   * copy, and a line repeated crosses itself at 0°, which the solver refuses.
+   * Nothing is removed from the queue; copies are collapsed only for the solve.
+   */
+  function distinctObservations(readings) {
+    const seen = new Set();
+    const out = [];
+    for (const r of readings.slice().sort((a, b) => at(a) - at(b))) {
+      const lat = r.lat == null ? 'x' : Number(r.lat).toFixed(7);
+      const lon = r.lon == null ? 'x' : Number(r.lon).toFixed(7);
+      const key = `${at(r)}|${lat}|${lon}|${Number(r.bearing || 0).toFixed(6)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(r);
+    }
+    return out;
+  }
+
   /** Group readings into rounds, oldest first. */
   function clusterRounds(readings, options) {
     const gap = (options && options.gapMs) || GAP_MS;
@@ -54,10 +81,11 @@
         continue;
       }
 
-      // A station occupied twice means the next round has begun, however
+      // A station occupied again means the next round has begun, however
       // little time has passed. Deliberately not filtered by observer: two
       // teams share a login, so the name says nothing about who stood where.
-      if (current.some((r) => sameSpot(reading, r, sameSpotM))) {
+      // Time must have moved on, or a repeated record looks like a new round.
+      if (reoccupied(reading, current, sameSpotM)) {
         rounds.push([reading]);
         continue;
       }
@@ -74,5 +102,5 @@
     return rounds.length ? rounds[rounds.length - 1] : [];
   }
 
-  return { clusterRounds, latestRound, GAP_MS, SAME_SPOT_M };
+  return { clusterRounds, latestRound, distinctObservations, GAP_MS, SAME_SPOT_M };
 }));

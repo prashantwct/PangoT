@@ -89,6 +89,16 @@ class Config:
         # Set AUTO_MIGRATE=0 to take manual control.
         self.auto_migrate = env.get("AUTO_MIGRATE", "1").strip().lower() not in ("0", "false", "no")
 
+        # A one-off correction, run once at boot. Opt-in, because it rewrites
+        # which fixes are current. "dry-run" reports without changing anything.
+        # See run_boot_refix in app.py.
+        self.refix_on_boot = env.get("REFIX_ON_BOOT", "").strip()
+
+        # Kept so a boot-time task can read its own settings without reaching
+        # for os.environ, which would ignore an injected environment and is
+        # what made an earlier production check untestable.
+        self.env = dict(env)
+
         # --- Map ---
         self.mapbox_token = env.get("MAPBOX_TOKEN", "").strip()
 

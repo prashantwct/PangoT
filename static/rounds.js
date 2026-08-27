@@ -11,22 +11,36 @@
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./triangulate.js'));
   } else {
-    root.PangoRounds = factory();
+    root.PangoRounds = factory(root.Triangulate);
   }
-}(typeof self !== 'undefined' ? self : this, function () {
+}(typeof self !== 'undefined' ? self : this, function (Triangulate) {
   'use strict';
 
   const GAP_MS = 20 * 60 * 1000;
   const REPEAT_WINDOW_MS = 3 * 60 * 1000;
+  // Matches events.DEFAULT_SAME_SPOT_M and triangulation.MIN_BASELINE_M.
+  const SAME_SPOT_M = 25;
 
   const at = (reading) => new Date(reading.time).getTime();
+
+  /** Metres between two readings, or null if either has no position. */
+  function apart(a, b) {
+    if (a.lat == null || a.lon == null || b.lat == null || b.lon == null) return null;
+    return Triangulate.distanceMetres(a.lat, a.lon, b.lat, b.lon);
+  }
+
+  function sameSpot(a, b, tolerance) {
+    const d = apart(a, b);
+    return d !== null && d <= tolerance;
+  }
 
   /** Group readings into rounds, oldest first. */
   function clusterRounds(readings, options) {
     const gap = (options && options.gapMs) || GAP_MS;
     const repeatWindow = (options && options.repeatWindowMs) || REPEAT_WINDOW_MS;
+    const sameSpotM = (options && options.sameSpotM) || SAME_SPOT_M;
 
     const ordered = readings.slice().sort((a, b) => at(a) - at(b));
     if (!ordered.length) return [];
@@ -44,9 +58,14 @@
       if (reading.observer) {
         const earlier = current.filter((r) => r.observer === reading.observer);
         const last = earlier[earlier.length - 1];
-        if (last && at(reading) - at(last) > repeatWindow) {
-          rounds.push([reading]);
-          continue;
+        if (last) {
+          // Back at a station already used this round: the next round has
+          // begun, however little time has passed. See events.py.
+          const returned = earlier.some((r) => sameSpot(reading, r, sameSpotM));
+          if (returned || at(reading) - at(last) > repeatWindow) {
+            rounds.push([reading]);
+            continue;
+          }
         }
       }
 
@@ -62,5 +81,5 @@
     return rounds.length ? rounds[rounds.length - 1] : [];
   }
 
-  return { clusterRounds, latestRound, GAP_MS, REPEAT_WINDOW_MS };
+  return { clusterRounds, latestRound, GAP_MS, REPEAT_WINDOW_MS, SAME_SPOT_M };
 }));

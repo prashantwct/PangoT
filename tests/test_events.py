@@ -15,18 +15,27 @@ from events import (
     event_started_at,
 )
 
+# Two fixed stations about 130 m apart, as a real team works them.
+STATION_A = (21.85635, 79.57928)
+STATION_B = (21.85596, 79.58008)
+
 START = datetime(2026, 8, 16, 18, 0, tzinfo=timezone.utc)
 
 
 class Reading:
     """Only what the clustering needs."""
 
-    def __init__(self, minutes, observer):
+    def __init__(self, minutes, observer, station=None):
         self.timestamp = START + timedelta(minutes=minutes)
         self.observer = observer
+        self.obs_lat, self.obs_lon = station if station else (None, None)
 
     def __repr__(self):
         return f"<{self.observer} +{(self.timestamp - START).total_seconds() / 60:g}m>"
+
+
+def seconds(secs, observer, station=None):
+    return Reading(secs / 60, observer, station)
 
 
 def observers(events):
@@ -152,3 +161,88 @@ def test_every_reading_lands_in_exactly_one_event(count):
     readings = [Reading(i * 30, f"OB{i % 3}") for i in range(count)]
     events = cluster_events(readings)
     assert sum(len(e) for e in events) == count
+
+
+# --- rule 2: returning to a station you have already used -------------------
+#
+# These come from a real export. One observer walks between two fixed stations,
+# takes a bearing at each about 40 seconds apart, then walks the circuit again
+# two minutes later. The time rule alone merged the two circuits into a round of
+# four bearings that crossed at 5° and produced no fix at all.
+
+
+def test_returning_to_a_station_starts_a_new_round():
+    events = cluster_events([
+        seconds(0, "BB", STATION_A),      # circuit one
+        seconds(36, "BB", STATION_B),
+        seconds(154, "BB", STATION_B),    # back at B: circuit two has begun
+        seconds(199, "BB", STATION_A),
+    ])
+
+    assert len(events) == 2
+    assert offsets(events) == [[0, 0.6], [154 / 60, 199 / 60]]
+
+
+def test_moving_between_stations_stays_in_one_round():
+    """The same observer twice, seconds apart, at genuinely different places."""
+    events = cluster_events([seconds(0, "BB", STATION_A), seconds(36, "BB", STATION_B)])
+
+    assert len(events) == 1
+
+
+def test_the_station_rule_does_not_need_the_time_rule():
+    """Two circuits back to back are split however little time has passed."""
+    events = cluster_events([
+        seconds(0, "RK", STATION_A),
+        seconds(30, "RK", STATION_B),
+        seconds(45, "RK", STATION_A),     # 15 s later, but back at A
+    ])
+
+    assert len(events) == 2
+
+
+def test_a_few_paces_from_a_used_station_counts_as_the_same_station():
+    """GPS never repeats a position exactly; 25 m of slack matches the solver,
+    which refuses a baseline shorter than that as carrying no geometry."""
+    nearby = (STATION_A[0] + 0.00009, STATION_A[1])      # about 10 m north
+
+    events = cluster_events([
+        seconds(0, "BB", STATION_A),
+        seconds(36, "BB", STATION_B),
+        seconds(60, "BB", nearby),
+    ])
+
+    assert len(events) == 2
+
+
+def test_a_genuinely_new_position_does_not_split_the_round():
+    far = (STATION_A[0] + 0.0045, STATION_A[1])          # about 500 m north
+
+    events = cluster_events([
+        seconds(0, "BB", STATION_A),
+        seconds(36, "BB", STATION_B),
+        seconds(60, "BB", far),
+    ])
+
+    assert len(events) == 1
+
+
+def test_readings_without_a_position_fall_back_to_the_time_rule():
+    events = cluster_events([Reading(0, "BB"), Reading(1, "BB"), Reading(2, "PD")])
+    assert len(events) == 1
+
+
+def test_two_observers_at_their_own_stations_are_one_round():
+    """The ordinary case: each observer has a station and neither returns."""
+    events = cluster_events([seconds(0, "MK", STATION_A), seconds(40, "PD", STATION_B)])
+    assert len(events) == 1
+
+
+def test_the_station_tolerance_is_adjustable():
+    close = (STATION_A[0] + 0.0009, STATION_A[1])        # about 100 m
+
+    readings = [seconds(0, "BB", STATION_A), seconds(36, "BB", STATION_B),
+                seconds(60, "BB", close)]
+
+    assert len(cluster_events(readings, same_spot_m=25)) == 1
+    assert len(cluster_events(readings, same_spot_m=150)) == 2

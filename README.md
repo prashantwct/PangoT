@@ -96,9 +96,14 @@ offline once the fix is known.
 ### Several rounds in one session
 
 You do not have to start a new session for each round of bearings. Rounds are
-worked out from the readings themselves: a gap of more than 20 minutes starts a
-new one, and so does the same observer taking a second bearing more than 3
-minutes after their first.
+worked out from the readings themselves:
+
+- a gap of more than 20 minutes starts a new round;
+- so does an observer **returning to a station** they have already used in this
+  round — teams walk a circuit of fixed stations, and coming back to one means
+  the next round has begun, however little time has passed;
+- otherwise, the same observer appearing twice starts a new round only if the
+  two readings are more than 3 minutes apart.
 
 Each round gets its own fix, so a night of four rounds on one animal gives four
 positions, not one. This used to depend on someone remembering to start a fresh

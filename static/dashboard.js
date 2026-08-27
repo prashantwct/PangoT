@@ -149,8 +149,16 @@ function projectFrom(lat, lon, bearing, metres) {
 }
 
 /** Observers that contributed to a fix, from the raw bearings we hold. */
+/** A session can now hold several rounds of bearings on one animal, each with
+ *  its own fix, so matching on session and animal alone would mix them. */
+function sameRound(reading, fix) {
+  return reading.group_id === fix.group_id
+    && reading.pango_id === fix.pango_id
+    && (reading.event_started_at || null) === (fix.event_started_at || null);
+}
+
 function observersFor(fix) {
-  return state.raw.filter((r) => r.group_id === fix.group_id && r.pango_id === fix.pango_id);
+  return state.raw.filter((r) => sameRound(r, fix));
 }
 
 /**
@@ -393,7 +401,7 @@ function drawBearings(raw, fixes) {
     const lon = Number(r.obs_lon);
     if (!isValidCoord(lat, lon)) return;
 
-    const fix = fixes.find((f) => f.group_id === r.group_id && f.pango_id === r.pango_id);
+    const fix = fixes.find((f) => sameRound(r, f));
     // Draw the ray to the fix it contributed to, rather than a fixed 2 km that
     // may stop short of the fix or run well past it.
     const length = fix

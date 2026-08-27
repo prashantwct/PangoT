@@ -176,9 +176,15 @@ const { distanceMetres, bearingDegrees } = Triangulate;
 async function computeLocalFix(animalId) {
   if (!animalId) return null;
 
-  const readings = (await store.all()).filter((r) => (
+  const forAnimal = (await store.all()).filter((r) => (
     r.group_id === state.session.code && r.pango_id === animalId && !r.error
   ));
+
+  // Only the round in progress. Solving every reading in the session together
+  // was the same mistake the server made: after a second round it crossed
+  // bearings taken on an animal that had since moved, and pointed the observer
+  // at a place between the two. See static/rounds.js.
+  const readings = PangoRounds.latestRound(forAnimal);
   if (readings.length < 2) return null;
 
   try {

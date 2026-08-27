@@ -14,7 +14,7 @@
  *    "sync succeeded" would be worse than no answer at all.
  */
 
-const VERSION = 'v6';
+const VERSION = 'v7';
 const SHELL_CACHE = `pango-shell-${VERSION}`;
 const TILE_CACHE = 'pango-tiles';
 
@@ -24,6 +24,7 @@ const SHELL_ASSETS = [
   '/static/app.js',
   '/static/triangulate.js',
   '/static/compass.js',
+  '/static/rounds.js',
   '/static/icon-192.png',
   '/static/icon-512.png',
   '/manifest.json',

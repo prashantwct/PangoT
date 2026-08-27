@@ -43,8 +43,9 @@ from auth import (
 )
 from config import Config
 from extensions import csrf, db, migrate
+from events import cluster_events, event_started_at
 from geodesy import to_true_bearing
-from models import Animal, CalculatedFix, RawBearing, User, to_dict, utcnow
+from models import Animal, CalculatedFix, RawBearing, User, as_utc, to_dict, utcnow
 from schema import (
     STALE_SCHEMA_MESSAGE,
     check as check_schema,
@@ -247,14 +248,51 @@ def _store_readings(accepted):
     return stored, len(incoming) - stored
 
 
+def _solve_event(group_id, pango_id, readings):
+    """Solve one round of bearings. Returns a per-event result dict."""
+    started_at = event_started_at(readings)
+
+    if len(readings) < 2:
+        return {
+            "event_started_at": started_at,
+            "status": "waiting",
+            "n_bearings": len(readings),
+            "message": (
+                f"{pango_id}: {len(readings)} of 2 bearings"
+                " — waiting for the second observer"
+            ),
+        }
+
+    try:
+        fix = solve([Observation(r.obs_lat, r.obs_lon, r.bearing_true) for r in readings])
+    except TriangulationError as exc:
+        return {
+            "event_started_at": started_at,
+            "status": "failed",
+            "n_bearings": len(readings),
+            "message": f"{pango_id}: {exc}",
+        }
+
+    return {
+        "event_started_at": started_at,
+        "status": "fixed",
+        "fix": fix,
+        "n_bearings": len(readings),
+    }
+
+
 def _recompute(group_id, pango_id):
     """Re-solve one animal within one session. Returns a message for the field app.
 
-    The previous implementation deleted the existing fix *before* checking
-    whether a new one could be computed, so one bad bearing appended to a
-    healthy group destroyed a fix that had been correct. Here nothing is
-    touched until a valid replacement exists, and the old fix is superseded
-    rather than deleted so the history stays auditable.
+    Bearings are split into rounds first — see events.cluster_events. Solving a
+    whole session together is right only if the team started a fresh session for
+    every round, and when they did not, eight bearings from four rounds were
+    merged into one fix in a place the animal never was. Each round now gets its
+    own fix.
+
+    Nothing is destroyed. A fix whose round has been re-solved is superseded,
+    not deleted, and a round that now fails to solve leaves its previous fix
+    standing — appending one bad bearing must not cost a fix that was correct.
     """
     readings = (
         RawBearing.query.filter_by(group_id=group_id, pango_id=pango_id)
@@ -262,58 +300,141 @@ def _recompute(group_id, pango_id):
         .all()
     )
 
-    if len(readings) < 2:
+    if not readings:
         return {
             "group_id": group_id,
             "pango_id": pango_id,
             "status": "waiting",
-            "message": f"{pango_id}: {len(readings)} of 2 bearings — waiting for the second observer",
+            "events": [],
+            "message": f"{pango_id}: no bearings yet",
         }
 
-    try:
-        fix = solve(
-            [Observation(r.obs_lat, r.obs_lon, r.bearing_true) for r in readings]
+    events = cluster_events(readings)
+
+    # Stamp each reading with its round, so the dashboard can draw a bearing
+    # ray to the fix it actually contributed to.
+    for event in events:
+        started_at = event_started_at(event)
+        for reading in event:
+            reading.event_started_at = started_at
+
+    current = {
+        as_utc(fix.event_started_at): fix
+        for fix in _current_fixes_query()
+        .filter_by(group_id=group_id, pango_id=pango_id)
+        .all()
+    }
+
+    results = [_solve_event(group_id, pango_id, event) for event in events]
+    solved_at = utcnow()
+    fixed = 0
+
+    for result in results:
+        started_at = result["event_started_at"]
+        # Claim this round's existing fix whatever the outcome. A round that
+        # cannot solve keeps the fix it already had: appending one bad bearing
+        # must not cost a fix that was correct, and leaving it in `current`
+        # would let the sweep below supersede it.
+        previous = current.pop(as_utc(started_at), None)
+
+        if result["status"] != "fixed":
+            continue
+
+        fix = result["fix"]
+
+        # An unchanged round is left alone. Superseding and reinserting an
+        # identical fix on every upload would churn its id, and the dashboard
+        # reads a new id as a new fix.
+        if previous is not None and _same_fix(previous, fix):
+            continue
+
+        if previous is not None:
+            previous.superseded_at = solved_at
+
+        db.session.add(
+            CalculatedFix(
+                group_id=group_id,
+                pango_id=pango_id,
+                event_started_at=started_at,
+                calc_lat=fix.lat,
+                calc_lon=fix.lon,
+                rms_error_m=fix.rms_error_m,
+                crossing_angle_deg=fix.crossing_angle_deg,
+                n_bearings=fix.n_bearings,
+                quality=fix.quality,
+                note=fix.describe(),
+                timestamp=solved_at,
+            )
         )
-    except TriangulationError as exc:
+        fixed += 1
+
+    # Anything left in `current` belongs to a round that no longer exists —
+    # only reachable if readings were removed. Its fix no longer describes
+    # anything, so it is superseded rather than left to mislead.
+    for orphan in current.values():
+        orphan.superseded_at = solved_at
+
+    return _recompute_summary(group_id, pango_id, results, fixed)
+
+
+def _same_fix(row, fix) -> bool:
+    """Would re-solving this round produce the row we already have?"""
+    return (
+        row.n_bearings == fix.n_bearings
+        and _close(row.calc_lat, fix.lat)
+        and _close(row.calc_lon, fix.lon)
+    )
+
+
+def _close(a, b, tolerance=1e-9) -> bool:
+    if a is None or b is None:
+        return a is b
+    return abs(a - b) <= tolerance
+
+
+def _recompute_summary(group_id, pango_id, results, fixed):
+    """One message for the field app, covering every round in the session."""
+    solved = [r for r in results if r["status"] == "fixed"]
+    waiting = [r for r in results if r["status"] == "waiting"]
+    failed = [r for r in results if r["status"] == "failed"]
+
+    if solved:
+        newest = solved[-1]["fix"]
+        if len(results) == 1:
+            message = f"{pango_id}: fix found ({newest.quality}) — {newest.describe()}"
+        else:
+            message = (
+                f"{pango_id}: {len(solved)} of {len(results)} rounds solved"
+                f" — latest {newest.quality}, {newest.describe()}"
+            )
         return {
             "group_id": group_id,
             "pango_id": pango_id,
-            "status": "failed",
-            "message": f"{pango_id}: {exc}",
-            "kept_previous_fix": bool(
-                _current_fixes_query().filter_by(group_id=group_id, pango_id=pango_id).first()
+            "status": "fixed",
+            "quality": newest.quality,
+            "lat": newest.lat,
+            "lon": newest.lon,
+            "crossing_angle_deg": round(newest.crossing_angle_deg, 1),
+            "rms_error_m": (
+                round(newest.rms_error_m, 1) if newest.rms_error_m is not None else None
             ),
+            "events": len(results),
+            "events_solved": len(solved),
+            "events_updated": fixed,
+            "message": message,
         }
 
-    superseded_at = utcnow()
-    for previous in _current_fixes_query().filter_by(group_id=group_id, pango_id=pango_id).all():
-        previous.superseded_at = superseded_at
-
-    db.session.add(
-        CalculatedFix(
-            group_id=group_id,
-            pango_id=pango_id,
-            calc_lat=fix.lat,
-            calc_lon=fix.lon,
-            rms_error_m=fix.rms_error_m,
-            crossing_angle_deg=fix.crossing_angle_deg,
-            n_bearings=fix.n_bearings,
-            quality=fix.quality,
-            note=fix.describe(),
-            timestamp=utcnow(),
-        )
-    )
-
+    detail = (failed or waiting)[-1]["message"]
     return {
         "group_id": group_id,
         "pango_id": pango_id,
-        "status": "fixed",
-        "quality": fix.quality,
-        "lat": fix.lat,
-        "lon": fix.lon,
-        "crossing_angle_deg": round(fix.crossing_angle_deg, 1),
-        "rms_error_m": round(fix.rms_error_m, 1) if fix.rms_error_m is not None else None,
-        "message": f"{pango_id}: fix found ({fix.quality}) — {fix.describe()}",
+        "status": "failed" if failed else "waiting",
+        "events": len(results),
+        "events_solved": 0,
+        "kept_previous_fix": bool(
+            _current_fixes_query().filter_by(group_id=group_id, pango_id=pango_id).first()
+        ),
+        "message": detail,
     }
 
 
@@ -750,6 +871,63 @@ def _csv_response(rows, header, filename):
 def _register_cli(app):
     """`flask users ...` — account management without needing the web UI."""
     import click
+
+    @app.cli.command("refix")
+    @click.option("--dry-run", is_flag=True, help="Report what would change, change nothing.")
+    def refix_command(dry_run):
+        """Re-solve every session, splitting its bearings into rounds.
+
+        Sessions recorded before rounds existed hold one fix built from every
+        bearing for that animal. Where the team took several rounds without
+        starting a new session, that fix is a blend of positions the animal was
+        never at, and the real ones were never calculated. The bearings are all
+        still there, so re-solving recovers them.
+
+        Superseded fixes are left in place, as always. Nothing is deleted.
+        """
+        pairs = (
+            db.session.query(RawBearing.group_id, RawBearing.pango_id)
+            .distinct()
+            .order_by(RawBearing.group_id, RawBearing.pango_id)
+            .all()
+        )
+
+        if not pairs:
+            click.echo("No bearings recorded — nothing to do.")
+            return
+
+        before = _current_fixes_query().count()
+        split = 0
+
+        for group_id, pango_id in pairs:
+            readings = (
+                RawBearing.query.filter_by(group_id=group_id, pango_id=pango_id)
+                .order_by(RawBearing.timestamp)
+                .all()
+            )
+            events = cluster_events(readings)
+            if len(events) > 1:
+                split += 1
+                click.echo(
+                    f"  {group_id} / {pango_id}: {len(readings)} bearings"
+                    f" -> {len(events)} rounds"
+                )
+            if not dry_run:
+                _recompute(group_id, pango_id)
+
+        if dry_run:
+            db.session.rollback()
+            click.echo(
+                f"\nDry run. {split} of {len(pairs)} session/animal pairs would be split."
+            )
+            return
+
+        db.session.commit()
+        after = _current_fixes_query().count()
+        click.echo(
+            f"\nRe-solved {len(pairs)} session/animal pairs; {split} were split "
+            f"into rounds.\nCurrent fixes: {before} -> {after}."
+        )
 
     @app.cli.command("deploy")
     def deploy_command():

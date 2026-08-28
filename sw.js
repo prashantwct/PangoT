@@ -14,7 +14,7 @@
  *    "sync succeeded" would be worse than no answer at all.
  */
 
-const VERSION = 'v11';
+const VERSION = 'v12';
 const SHELL_CACHE = `pango-shell-${VERSION}`;
 const TILE_CACHE = 'pango-tiles';
 

@@ -730,6 +730,8 @@ function showRefixReport(lines) {
   report.hidden = !lines.length;
 }
 
+/** Clear the preview and everything shown about it. Opening the dialog, or
+ *  changing the window, starts from nothing. */
 function resetRefixPreview() {
   refixPreviewedFor = null;
   $('refix-apply').disabled = true;
@@ -761,12 +763,20 @@ async function runRefix(apply) {
     showRefixReport(body.lines || []);
 
     if (apply) {
-      refixStatus('ok', `Done. ${body.before} fixes became ${body.after}.`);
-      resetRefixPreview();
-      $('refix-report').hidden = false;
-      showRefixReport(body.lines || []);
+      // Clear the preview by hand rather than calling resetRefixPreview():
+      // that hides the status box, which swallowed this confirmation whole.
+      // The coordinator saw the message vanish and Apply grey out, with
+      // nothing to say the work had been done — and it had.
+      refixPreviewedFor = null;
+      $('refix-apply').disabled = true;
       state.hasFitBounds = false;      // the map should show what is there now
       await loadData({ quiet: true });
+
+      // Last, so nothing after it can hide the one thing being reported.
+      refixStatus('ok', body.after === body.before
+        ? 'Nothing needed changing.'
+        : `Done. ${body.before} fixes became ${body.after}.`
+          + ' Close this to see them on the map.');
     } else {
       refixPreviewedFor = since;
       const delta = body.after - body.before;

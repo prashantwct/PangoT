@@ -153,10 +153,29 @@ def test_a_dry_run_changes_nothing(two_weeks):
 def test_a_dry_run_reports_what_it_would_split(two_weeks):
     from app import run_refix
 
-    lines = "\n".join(run_refix(dry_run=True)["lines"])
+    report = run_refix(dry_run=True)
+    lines = "\n".join(report["lines"])
 
     assert "8 bearings -> 4 rounds" in lines
-    assert "nothing changed" in lines
+    assert "Nothing has changed" in lines
+    # The count it would reach, not just how the bearings group.
+    assert report["after"] == 16
+    assert report["before"] == 0
+
+
+def test_a_dry_run_after_the_work_is_done_says_there_is_nothing_to_do(two_weeks):
+    """The report has to answer "what would change", not "how do these group".
+
+    After a correction the grouping looks identical, so a report phrased around
+    the grouping still reads as work pending when there is none.
+    """
+    from app import run_refix
+
+    run_refix()
+    report = run_refix(dry_run=True)
+
+    assert report["before"] == report["after"]
+    assert "already solved by round" in "\n".join(report["lines"])
 
 
 # --- safety -----------------------------------------------------------------

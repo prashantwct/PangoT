@@ -172,3 +172,45 @@ body {
   .sidebar { width: auto; max-height: 42vh; border-left: none; border-top: 1px solid var(--line-firm); }
   #map { min-height: 46vh; }
 }
+
+/* --- Recalculate rounds ---------------------------------------------------
+   The report can run to dozens of lines, so it scrolls inside the dialog
+   rather than pushing the buttons off the bottom of a laptop screen. */
+/* The base dialog is 420px, too narrow for the report, and a long report
+   pushed the buttons past the bottom of a laptop screen. Widen it, cap its
+   height, and let the report take the slack. */
+#refix-dialog {
+  width: min(660px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+}
+
+#refix-dialog .dialog-body {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
+}
+
+#refix-dialog .btn-row { flex: none; }
+
+.dialog-intro {
+  margin: 0 0 10px;
+  color: var(--ink-2);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+#refix-report {
+  margin: 12px 0 0;
+  flex: 1 1 auto;
+  min-height: 0;          /* so it shrinks instead of pushing the buttons out */
+  max-height: 40vh;
+  overflow: auto;
+  padding: 10px 12px;
+  background: var(--surface-2, var(--surface));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  white-space: pre;
+}

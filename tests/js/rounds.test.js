@@ -12,9 +12,21 @@ const R = require('../../static/rounds.js');
 
 const START = Date.parse('2026-08-16T18:00:00.000Z');
 
-function reading(minutes, observer) {
-  return { time: new Date(START + minutes * 60000).toISOString(), observer };
+// Two fixed stations about 130 m apart, as a real team works them.
+const STATION_A = { lat: 21.85635, lon: 79.57928 };
+const STATION_B = { lat: 21.85596, lon: 79.58008 };
+
+function reading(minutes, observer, station, bearing) {
+  return {
+    time: new Date(START + minutes * 60000).toISOString(),
+    observer,
+    lat: station ? station.lat : null,
+    lon: station ? station.lon : null,
+    bearing: bearing === undefined ? 0 : bearing,
+  };
 }
+
+const seconds = (secs, observer, station, bearing) => reading(secs / 60, observer, station, bearing);
 
 const observers = (rounds) => rounds.map((r) => r.map((x) => x.observer));
 
@@ -52,24 +64,28 @@ test('the gap is measured between neighbours, not from the start', () => {
   assert.strictEqual(rounds.length, 1);
 });
 
-// --- rule 2: an observer appearing twice ------------------------------------
+// --- rule 2: a station occupied twice ---------------------------------------
 
-test('the same observer twice starts a new round', () => {
+test('two rounds ten minutes apart are split by their stations', () => {
   const rounds = R.clusterRounds([
-    reading(0, 'MK'), reading(1, 'PD'), reading(10, 'MK'), reading(11, 'PD'),
+    reading(0, 'MK', STATION_A), reading(1, 'PD', STATION_B),
+    reading(10, 'MK', STATION_A), reading(11, 'PD', STATION_B),
   ]);
   assert.strictEqual(rounds.length, 2);
   assert.deepStrictEqual(observers(rounds), [['MK', 'PD'], ['MK', 'PD']]);
 });
 
-test('an observer reshooting immediately stays in the same round', () => {
-  const rounds = R.clusterRounds([reading(0, 'MK'), reading(1, 'MK'), reading(2, 'PD')]);
+test('the same login at two stations is one round', () => {
+  // Two teams share a login, so the observer name identifies nobody. An
+  // earlier rule split these after three minutes and cost real fixes.
+  const rounds = R.clusterRounds([
+    reading(0, 'BB', STATION_A), reading(9, 'BB', STATION_B),
+  ]);
   assert.strictEqual(rounds.length, 1);
-  assert.deepStrictEqual(observers(rounds), [['MK', 'MK', 'PD']]);
 });
 
-test('an unnamed observer falls back to the time rule', () => {
-  const rounds = R.clusterRounds([reading(0, null), reading(5, null), reading(9, null)]);
+test('readings with no position cannot be split inside the window', () => {
+  const rounds = R.clusterRounds([reading(0, 'MK'), reading(1, 'MK'), reading(2, 'PD')]);
   assert.strictEqual(rounds.length, 1);
 });
 
@@ -116,4 +132,130 @@ test('the latest round is the one to walk towards', () => {
 
 test('with nothing recorded the latest round is empty', () => {
   assert.deepStrictEqual(R.latestRound([]), []);
+});
+
+// --- returning to a station you have already used ---------------------------
+//
+// From a real export: one observer walks between two fixed stations, takes a
+// bearing at each about 40 seconds apart, then walks the circuit again two
+// minutes later. Time alone merged the circuits into one round of four
+// bearings that crossed at 5° and produced no fix.
+
+test('returning to a station starts a new round', () => {
+  const rounds = R.clusterRounds([
+    seconds(0, 'BB', STATION_A),
+    seconds(36, 'BB', STATION_B),
+    seconds(154, 'BB', STATION_B),
+    seconds(199, 'BB', STATION_A),
+  ]);
+
+  assert.strictEqual(rounds.length, 2);
+  assert.deepStrictEqual(rounds.map((r) => r.length), [2, 2]);
+});
+
+test('moving between stations stays in one round', () => {
+  const rounds = R.clusterRounds([seconds(0, 'BB', STATION_A), seconds(36, 'BB', STATION_B)]);
+  assert.strictEqual(rounds.length, 1);
+});
+
+test('the station rule does not need the time rule', () => {
+  const rounds = R.clusterRounds([
+    seconds(0, 'RK', STATION_A),
+    seconds(30, 'RK', STATION_B),
+    seconds(45, 'RK', STATION_A),
+  ]);
+  assert.strictEqual(rounds.length, 2);
+});
+
+test('a few paces from a used station counts as the same station', () => {
+  const nearby = { lat: STATION_A.lat + 0.00009, lon: STATION_A.lon };   // ~10 m
+  const rounds = R.clusterRounds([
+    seconds(0, 'BB', STATION_A), seconds(36, 'BB', STATION_B), seconds(60, 'BB', nearby),
+  ]);
+  assert.strictEqual(rounds.length, 2);
+});
+
+test('a genuinely new position does not split the round', () => {
+  const far = { lat: STATION_A.lat + 0.0045, lon: STATION_A.lon };       // ~500 m
+  const rounds = R.clusterRounds([
+    seconds(0, 'BB', STATION_A), seconds(36, 'BB', STATION_B), seconds(60, 'BB', far),
+  ]);
+  assert.strictEqual(rounds.length, 1);
+});
+
+test('readings without a position fall back to the time rule', () => {
+  const rounds = R.clusterRounds([reading(0, 'BB'), reading(1, 'BB'), reading(2, 'PD')]);
+  assert.strictEqual(rounds.length, 1);
+});
+
+test('two observers at their own stations are one round', () => {
+  const rounds = R.clusterRounds([seconds(0, 'MK', STATION_A), seconds(40, 'PD', STATION_B)]);
+  assert.strictEqual(rounds.length, 1);
+});
+
+test('the station tolerance is adjustable', () => {
+  const close = { lat: STATION_A.lat + 0.0009, lon: STATION_A.lon };     // ~100 m
+  const readings = [
+    seconds(0, 'BB', STATION_A), seconds(36, 'BB', STATION_B), seconds(60, 'BB', close),
+  ];
+  assert.strictEqual(R.clusterRounds(readings, { sameSpotM: 25 }).length, 1);
+  assert.strictEqual(R.clusterRounds(readings, { sameSpotM: 150 }).length, 2);
+});
+
+// --- the same observation stored more than once -----------------------------
+
+test('a repeated record is not a station being reoccupied', () => {
+  const rounds = R.clusterRounds([
+    seconds(0, 'BB', STATION_A),
+    seconds(0, 'BB', STATION_A),
+    seconds(0, 'BB', STATION_A),
+    seconds(36, 'BB', STATION_B),
+  ]);
+  assert.strictEqual(rounds.length, 1);
+  assert.strictEqual(rounds[0].length, 4);
+});
+
+test('a station reoccupied later still splits', () => {
+  const rounds = R.clusterRounds([
+    seconds(0, 'BB', STATION_A),
+    seconds(0, 'BB', STATION_A),
+    seconds(36, 'BB', STATION_B),
+    seconds(154, 'BB', STATION_B),
+  ]);
+  assert.strictEqual(rounds.length, 2);
+});
+
+test('round starts are unique and increasing', () => {
+  const rounds = R.clusterRounds([
+    seconds(0, 'BB', STATION_A), seconds(0, 'BB', STATION_A),
+    seconds(36, 'BB', STATION_B), seconds(36, 'BB', STATION_B),
+    seconds(154, 'BB', STATION_B), seconds(199, 'BB', STATION_A),
+  ]);
+  const starts = rounds.map((r) => Date.parse(r[0].time));
+  assert.strictEqual(new Set(starts).size, starts.length);
+  assert.deepStrictEqual(starts, starts.slice().sort((a, b) => a - b));
+});
+
+test('distinctObservations collapses copies', () => {
+  const a = seconds(0, 'BB', STATION_A, 170);
+  const same = seconds(0, 'BB', STATION_A, 170);
+  const otherBearing = seconds(0, 'BB', STATION_A, 171);
+  const otherPlace = seconds(0, 'BB', STATION_B, 170);
+  const later = seconds(36, 'BB', STATION_A, 170);
+
+  const kept = R.distinctObservations([a, same, otherBearing, otherPlace, later]);
+
+  assert.strictEqual(kept.length, 4);
+  assert.ok(!kept.includes(same));
+});
+
+test('distinctObservations keeps everything when nothing repeats', () => {
+  const readings = [seconds(0, 'MK', STATION_A, 10), seconds(36, 'PD', STATION_B, 200)];
+  assert.deepStrictEqual(R.distinctObservations(readings), readings);
+});
+
+test('distinctObservations returns oldest first', () => {
+  const late = seconds(36, 'PD', STATION_B, 200);
+  const early = seconds(0, 'MK', STATION_A, 10);
+  assert.deepStrictEqual(R.distinctObservations([late, early]), [early, late]);
 });

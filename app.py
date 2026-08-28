@@ -44,7 +44,7 @@ from auth import (
 )
 from config import Config
 from extensions import csrf, db, migrate
-from events import cluster_events, event_started_at
+from events import cluster_events, distinct_observations, event_started_at
 from geodesy import to_true_bearing
 from models import Animal, CalculatedFix, RawBearing, User, as_utc, to_dict, utcnow
 from schema import (
@@ -253,24 +253,30 @@ def _solve_event(group_id, pango_id, readings):
     """Solve one round of bearings. Returns a per-event result dict."""
     started_at = event_started_at(readings)
 
-    if len(readings) < 2:
+    # One entry per observation. A phone can store the same one several times,
+    # each with its own reading_id; handing every copy to the solver weights
+    # that bearing line once per copy, and a line repeated crosses itself at
+    # 0°, which the solver refuses. Every copy stays in the database.
+    observations = distinct_observations(readings)
+
+    if len(observations) < 2:
         return {
             "event_started_at": started_at,
             "status": "waiting",
-            "n_bearings": len(readings),
+            "n_bearings": len(observations),
             "message": (
-                f"{pango_id}: {len(readings)} of 2 bearings"
+                f"{pango_id}: {len(observations)} of 2 bearings"
                 " — waiting for the second observer"
             ),
         }
 
     try:
-        fix = solve([Observation(r.obs_lat, r.obs_lon, r.bearing_true) for r in readings])
+        fix = solve([Observation(r.obs_lat, r.obs_lon, r.bearing_true) for r in observations])
     except TriangulationError as exc:
         return {
             "event_started_at": started_at,
             "status": "failed",
-            "n_bearings": len(readings),
+            "n_bearings": len(observations),
             "message": f"{pango_id}: {exc}",
         }
 
@@ -278,7 +284,7 @@ def _solve_event(group_id, pango_id, readings):
         "event_started_at": started_at,
         "status": "fixed",
         "fix": fix,
-        "n_bearings": len(readings),
+        "n_bearings": len(observations),
     }
 
 
@@ -715,6 +721,45 @@ def _register_routes(app):  # noqa: C901 - route table, flat by nature
 
     # --- account management ---
 
+    @app.route("/api/refix", methods=["POST"])
+    @requires_admin
+    def api_refix():
+        """Re-solve sessions into rounds, from the dashboard.
+
+        Admin rather than coordinator: this rewrites which fixes are current
+        across many sessions at once, where the other fix routes touch one.
+
+        `preview` is the default and changes nothing, so the report can always
+        be read before anything is written.
+        """
+        payload = request.get_json(silent=True) or {}
+        apply = payload.get("apply") is True
+
+        try:
+            since = _parse_day(payload.get("since"))
+            until = _parse_day(payload.get("until"), end_of_day=True)
+        except ValueError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 400
+
+        try:
+            report = run_refix(since=since, until=until, dry_run=not apply)
+        except Exception as exc:  # noqa: BLE001
+            db.session.rollback()
+            if looks_like_stale_schema(exc):
+                return _fail(app, exc, STALE_SCHEMA_MESSAGE, status=503)
+            return _fail(app, exc, "Could not re-solve the sessions. Nothing was changed.")
+
+        if apply:
+            app.logger.info(
+                "refix applied by %s: %s pairs, %s split, fixes %s -> %s",
+                current_coordinator(), report["pairs"], report["split"],
+                report["before"], report["after"],
+            )
+            # No explicit notify: /api/stream watches _data_fingerprint, and the
+            # new fixes move it.
+
+        return jsonify({"status": "ok", "applied": apply, **report})
+
     @app.route("/users")
     @requires_admin
     def users_page():
@@ -930,22 +975,31 @@ def run_refix(since=None, until=None, dry_run=False):
             lines.append(
                 f"  {group_id} / {pango_id}: {len(readings)} bearings -> {len(rounds)} rounds"
             )
-        if not dry_run:
-            _recompute(group_id, pango_id)
+        # Done even for a dry run, so the report can state the real change
+        # rather than how the bearings group. After a correction has been
+        # applied, the grouping still looks the same but nothing would move,
+        # and only the second of those answers the question being asked.
+        _recompute(group_id, pango_id)
+
+    after = _current_fixes_query().count()
 
     if dry_run:
         db.session.rollback()
         lines.append(
-            f"\nDry run — nothing changed. {split} of {len(pairs)} session/animal"
-            f" pairs{window} would be split into rounds."
+            f"\nNothing has changed. {split} of {len(pairs)} session/animal pairs"
+            f"{window} split into rounds, and applying this would take the fix"
+            f" count from {before} to {after}."
+            if after != before else
+            f"\nNothing has changed, and applying this would change nothing:"
+            f" the {len(pairs)} session/animal pairs{window} are already solved"
+            f" by round."
         )
         return {
-            "pairs": len(pairs), "split": split, "before": before, "after": before,
+            "pairs": len(pairs), "split": split, "before": before, "after": after,
             "dry_run": True, "lines": lines,
         }
 
     db.session.commit()
-    after = _current_fixes_query().count()
     lines.append(
         f"\nRe-solved {len(pairs)} session/animal pairs{window};"
         f" {split} were split into rounds."

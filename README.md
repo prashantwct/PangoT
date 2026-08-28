@@ -96,9 +96,24 @@ offline once the fix is known.
 ### Several rounds in one session
 
 You do not have to start a new session for each round of bearings. Rounds are
-worked out from the readings themselves: a gap of more than 20 minutes starts a
-new one, and so does the same observer taking a second bearing more than 3
-minutes after their first.
+worked out from the readings themselves:
+
+- a gap of more than 20 minutes starts a new round;
+- so does a **station being occupied twice**. Two teams stand at two fixed
+  positions and shoot together; a second reading from a station already used
+  means the next round has begun, however little time has passed.
+
+Note what is *not* a rule: the same observer name appearing twice. Teams share
+a login, so two teams at two stations record under the same initials — under a
+shared login that is the ordinary shape of one round, not evidence of two. An
+earlier version split on it and cost real fixes.
+
+The station must be occupied *later*, not merely again. A phone can store one
+observation several times, each copy with its own `reading_id`, so an idempotent
+upload never sees them as duplicates — 184 rows of a real 1450-row export were
+copies, two of them sixteen times over. Copies are kept in the database and
+collapsed only where the geometry is worked out, because a bearing line
+repeated is a line crossing itself at 0°, which the solver refuses.
 
 Each round gets its own fix, so a night of four rounds on one animal gives four
 positions, not one. This used to depend on someone remembering to start a fresh
@@ -174,6 +189,21 @@ the boundary would be split in two.
 
 Superseded fixes are kept, as always. Nothing is deleted, and running it twice
 changes nothing the second time.
+
+#### From the dashboard
+
+**Recalculate rounds**, in the dashboard header, is the ordinary way to run
+this. Admin sign-in only: it rewrites which fixes are current across many
+sessions at once, where the other fix controls touch one at a time.
+
+**Preview** reports what would change and writes nothing. **Apply** stays
+disabled until a preview has run for the window on screen, and changing the
+window clears the preview — what was reported no longer describes what Apply
+would do.
+
+The preview reports the change, not the grouping. Once a window has been
+corrected the grouping looks the same but nothing would move, and only the
+first of those answers the question being asked.
 
 #### On a host with no shell
 

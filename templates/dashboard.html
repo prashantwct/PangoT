@@ -22,6 +22,7 @@
   <a class="linkbtn" href="/download_fixes">Fixes CSV</a>
   <a class="linkbtn" href="/download_csv">Bearings CSV</a>
   <a class="linkbtn" href="/">Field app</a>
+  <button type="button" class="linkbtn" id="refix-open">Recalculate rounds</button>
   <a class="linkbtn" href="/users">Accounts</a>
   <form method="post" action="/logout" style="margin:0">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -74,6 +75,36 @@
   <span id="toast-text"></span>
   <button type="button" id="toast-undo">Undo</button>
 </div>
+
+<dialog id="refix-dialog">
+  <div class="dialog-body">
+    <h2>Recalculate rounds</h2>
+    <p class="dialog-intro">
+      A session can hold several rounds of bearings on one animal. Sessions
+      recorded before rounds existed have at most one fix each, so the later
+      rounds were never calculated. This re-solves them from the bearings
+      already recorded.
+    </p>
+    <p class="dialog-intro">
+      Nothing is deleted. A replaced fix is kept and marked superseded, and the
+      raw bearings are never touched.
+    </p>
+    <div class="field">
+      <label for="refix-since">Only sessions with a bearing on or after</label>
+      <input type="date" id="refix-since">
+      <small>Leave blank for every session.</small>
+    </div>
+
+    <div class="msg" id="refix-status" hidden></div>
+    <pre id="refix-report" hidden></pre>
+
+    <div class="btn-row" style="margin-top:14px">
+      <button type="button" class="btn btn-quiet" id="refix-close">Close</button>
+      <button type="button" class="btn btn-info" id="refix-preview">Preview</button>
+      <button type="button" class="btn btn-primary" id="refix-apply" disabled>Apply</button>
+    </div>
+  </div>
+</dialog>
 
 <dialog id="edit-dialog">
   <div class="dialog-body">

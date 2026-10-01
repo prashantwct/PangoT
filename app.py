@@ -54,7 +54,7 @@ from schema import (
     looks_like_stale_schema,
     plan_deploy,
 )
-from triangulation import Observation, TriangulationError, solve
+from triangulation import Observation, TriangulationError, advise, solve
 from validation import ValidationError, validate_animal_id, validate_batch
 
 DEFAULT_ANIMAL_IDS = [f"P{i:02d}" for i in range(1, 17)]
@@ -270,14 +270,24 @@ def _solve_event(group_id, pango_id, readings):
             ),
         }
 
+    geometry = [Observation(r.obs_lat, r.obs_lon, r.bearing_true) for r in observations]
+
     try:
-        fix = solve([Observation(r.obs_lat, r.obs_lon, r.bearing_true) for r in observations])
-    except TriangulationError as exc:
+        fix = solve(geometry)
+    except TriangulationError:
+        # advise() rather than the raw solver message. The phone runs the same
+        # check before saving, but only over the readings it holds — and the two
+        # teams carry separate phones, so the one taking the second bearing
+        # often has not seen the first. The server is the only place that sees
+        # both, which makes this the only chance to say what went wrong while
+        # anybody is still in the field.
+        advice = advise(geometry)
+        note = advice.move_note
         return {
             "event_started_at": started_at,
             "status": "failed",
             "n_bearings": len(observations),
-            "message": f"{pango_id}: {exc}",
+            "message": f"{pango_id}: {advice.message}" + (f" {note}" if note else ""),
         }
 
     return {

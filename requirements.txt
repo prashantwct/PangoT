@@ -15,6 +15,11 @@ gunicorn==26.0.0
 python-dotenv==1.2.2
 
 # --- Database driver (Postgres in production, SQLite locally) ---
+# SQLAlchemy is pinned because Flask-SQLAlchemy accepts any 2.x, and which
+# DBAPI a bare postgresql:// URL resolves to changed between 2.0 (psycopg2)
+# and 2.1 (psycopg v3). config.py names the driver explicitly as well, so
+# neither a bump nor this pin alone decides it.
+SQLAlchemy==2.1.1
 psycopg2-binary==2.9.12
 
 # --- Geodesy & maths ---

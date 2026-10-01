@@ -169,6 +169,25 @@ python -c "from werkzeug.security import generate_password_hash as h; print(h(in
 
 Set the result as `ADMIN_PASSWORD_HASH` and delete `ADMIN_PASSWORD`.
 
+### Auditing an export
+
+`tools/audit_fixes.py` reads the two CSVs the dashboard exports and reports
+what the fieldwork produced, which rounds produced no position and why, and
+whether the stored fixes still reproduce from the same bearings:
+
+```bash
+python tools/audit_fixes.py bearings.csv fixes.csv --days 30
+python tools/audit_fixes.py bearings.csv --since 2026-09-01
+```
+
+Read-only; it writes nothing. The fixes file is optional — without it the
+comparison against a fresh solve is skipped.
+
+The distinction it works hardest to make is between a round with one bearing
+because nobody took a second, and a round with one bearing because both were
+taken from the same spot and the station rule split them. They look the same
+in the data and need opposite remedies.
+
 ### Recovering rounds from older data
 
 Sessions recorded before rounds existed hold at most one fix per animal. Where

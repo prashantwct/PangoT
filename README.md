@@ -131,10 +131,40 @@ confident fix in a place the animal never was.
 
 | | |
 |---|---|
-| **Separate well** | Observers must be at least 25 m apart; a few hundred metres is much better. The app refuses a solve from a single spot. |
+| **Separate well** | 25 m apart is the hard floor — below it every line passes through one point and the "fix" is at your own feet. It is not a target: six rounds on 1 October 2026 were taken from stations 55–85 m apart, aiming at something far enough away that none of them could produce a position. Aim to be separated by at least a third of the distance to the animal. |
 | **Cross near 90°** | Bearings crossing at a shallow angle give an enormously elongated uncertainty region even when they fit perfectly. Below 20° the fix is graded `poor`; below 10° it is refused. |
 | **Wait for GPS** | The app warns above ±25 m accuracy (configurable under Sync → Settings). At ±500 m the calculated position can be out by more than the animal's whole home range. |
 | **Three beats two** | With exactly two bearings the system is exactly determined, so there is no residual to report and no way to detect a bad bearing. A third gives you both. |
+
+#### Don't stand on the other team's line
+
+The commonest way a round is lost has nothing to do with accuracy. If the animal
+is roughly **between** the two teams, each team's needle points almost straight
+at the other, both bearings run along the line joining them, and they never
+cross. In September 2026 four rounds failed exactly this way, two of them with
+the teams aiming within 3° of each other.
+
+The remedy is counter-intuitive: moving **further apart along the same line**
+makes it worse. One team has to step **sideways**, at right angles to the line
+between them.
+
+The app now says so while there is still time to walk. When a reading would
+complete a round that cannot be solved, saving it raises a dialog naming the
+problem and the move — *"Walk about 310 m on 73°"*. It never blocks the save:
+the team can see things the geometry cannot, like the animal being close or a
+river in the way.
+
+The same advice comes back from `/sync`. That matters because the two teams
+carry separate phones under one login, so the phone taking the second bearing
+has usually never seen the first — the server is the only place that sees both.
+
+This is deliberately **not** a check on your position before you aim. The
+crossing angle depends on the range to the animal as much as on the angle
+between the lines, and in this project's data the animal sits about as far away
+as the teams are apart (median 273 m against a 248 m baseline) — where even a 2°
+offset still crosses steeply. Thresholding the angle in advance warned on 24
+rounds that produced a position, 8 of them good. Once the second bearing exists
+there is nothing left to assume, so that is when the check runs.
 
 ---
 
@@ -388,6 +418,26 @@ Two things are deliberate:
   without destroying anyone's dark adaptation.
 - **Leaflet is vendored** in `static/vendor/leaflet/`, not loaded from a CDN, so
   the dashboard still works on a restricted network.
+- **A bearing line drawn backwards, dotted and red, is a suspected 180° error.**
+  The fix lies *behind* that observer, which is what reading the back lobe of
+  the antenna produces. The line is drawn towards the fix rather than along the
+  bearing as written: drawn forwards it would set off in the opposite direction
+  and the lines would appear to cross nowhere, which looks like a broken solve
+  rather than a bad bearing. Eleven fixes in September 2026 are like this.
+- **The date filter uses the round's time, not the solve time.** A fix's own
+  timestamp is when the server solved it, and a recalculation can move that to a
+  different day from the bearings it describes — the 1 October re-solve
+  restamped 98 fixes, several belonging to rounds from the evening before.
+  Filtering on it put a fix on a different day from its own bearings, so the map
+  drew the fix with nothing underneath it. The fix popup now labels both times.
+- **The observer filter chooses rounds, not bearings.** Filtering to one
+  observer used to hide the partner's bearing, leaving a fix sitting under a
+  single line that could not have produced it. Both lines of a displayed round
+  are always drawn.
+- **`N without bearings` in the status bar** means fixes are on the map with
+  none of their own bearings loaded — either the bearings were deleted, or
+  `/api/data` applied its limit to bearings and fixes independently and the
+  round's bearings fell off the older end. Raise `limit` or narrow the filters.
 - **The map follows new fixes until you take over.** A fix that arrives while
   the dashboard is open is drawn wherever it is, which may be off screen. The
   map re-fits to include it — until you pan or zoom yourself, after which it

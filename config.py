@@ -10,6 +10,28 @@ import secrets
 from werkzeug.security import generate_password_hash
 
 
+
+def _name_the_postgres_driver(uri: str) -> str:
+    """Point a Postgres URL at the driver this project actually installs.
+
+    Two traps, one line apart.
+
+    Render and Heroku still hand out the legacy ``postgres://`` scheme, which
+    SQLAlchemy 2.x does not register at all.
+
+    And a bare ``postgresql://`` does not mean a fixed driver: SQLAlchemy 2.0
+    resolves it to psycopg2, 2.1 resolves it to psycopg (v3). This project
+    installs psycopg2-binary, so on 2.1 a bare URL fails at engine creation
+    with ``No module named 'psycopg'`` — the database unreachable, on a
+    dependency bump nobody made deliberately. Naming the driver takes the
+    SQLAlchemy version out of it.
+    """
+    for legacy in ("postgres://", "postgresql://"):
+        if uri.startswith(legacy):
+            return "postgresql+psycopg2://" + uri[len(legacy):]
+    return uri
+
+
 class ConfigError(RuntimeError):
     """Raised at startup when required configuration is missing."""
 
@@ -36,10 +58,7 @@ class Config:
 
         # --- Database ---
         self.database_uri = env.get("DATABASE_URL") or "sqlite:///pangolin_data.db"
-        # Render and Heroku still hand out the legacy postgres:// scheme, which
-        # SQLAlchemy 2.x no longer registers.
-        if self.database_uri.startswith("postgres://"):
-            self.database_uri = self.database_uri.replace("postgres://", "postgresql://", 1)
+        self.database_uri = _name_the_postgres_driver(self.database_uri)
 
         # --- Secret key ---
         self.secret_key = env.get("SECRET_KEY", "").strip()

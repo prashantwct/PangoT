@@ -16,6 +16,13 @@ venv/
 *.sqlite
 *.sqlite3
 
+# Audit reports and data exports. These name animals, sessions and the times
+# and places they were tracked, which is exactly what the coordinates need
+# protecting from. The repository is public; keep them on disk only.
+reports/
+*-pangolin_raw_bearings*.csv
+*-pangolin_fixes*.csv
+
 # Tests
 .pytest_cache/
 .coverage

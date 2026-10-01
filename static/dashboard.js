@@ -134,6 +134,43 @@ function distanceMetres(lat1, lon1, lat2, lon2) {
   return 2 * R_EARTH * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
+/** True bearing from one point to another, in degrees. */
+function bearingTo(lat1, lon1, lat2, lon2) {
+  const y = Math.sin(toRad(lon2 - lon1)) * Math.cos(toRad(lat2));
+  const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2))
+    - Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lon2 - lon1));
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
+/**
+ * When the round happened, as opposed to when it was solved.
+ *
+ * A fix's own timestamp is the moment the server solved it, which is not the
+ * day the bearings were taken: the recalculation of 1 October restamped
+ * 98 fixes, several of them for rounds from the evening before. Filtering a
+ * fix by that timestamp put it on a different day from its own bearings, so
+ * the map drew the fix with no lines under it — or the lines with no fix.
+ */
+const roundTime = (row) => row.event_started_at || row.timestamp || '';
+
+/**
+ * Does the fix lie ahead of this observer, along the bearing they recorded?
+ *
+ * When it does not, that bearing is roughly 180 degrees out — an easy mistake
+ * with a directional antenna, and the solver flags it. It matters here because
+ * the ray was always drawn forwards: for a reversed bearing it set off in the
+ * opposite direction from the fix, so the lines on the map crossed nowhere
+ * near the marker. Eleven fixes in September 2026 look like that.
+ */
+function fixIsAhead(reading, fix) {
+  const bearing = Number(reading.bearing_true ?? reading.bearing);
+  if (!Number.isFinite(bearing)) return true;
+  const toFix = bearingTo(
+    Number(reading.obs_lat), Number(reading.obs_lon), fix.calc_lat, fix.calc_lon,
+  );
+  return Math.abs(((bearing - toFix + 180) % 360) - 180) <= 90;
+}
+
 function projectFrom(lat, lon, bearing, metres) {
   const angular = metres / R_EARTH;
   const rLat = toRad(lat);
@@ -296,25 +333,41 @@ function filtered() {
   const raw = state.raw.filter((r) => (
     (animal === 'all' || r.pango_id === animal)
     && (observer === 'all' || r.observer === observer)
-    && (!date || (r.timestamp || '').startsWith(date))
+    && (!date || roundTime(r).startsWith(date))
   ));
 
   const observerGroups = new Set(raw.map((r) => `${r.group_id}|${r.pango_id}`));
 
   const fixes = state.fixes.filter((f) => (
     (animal === 'all' || f.pango_id === animal)
-    && (!date || (f.timestamp || '').startsWith(date))
+    && (!date || roundTime(f).startsWith(date))
     && (quality === 'all' || qualityOf(f) === quality)
     && (observer === 'all' || observerGroups.has(`${f.group_id}|${f.pango_id}`))
   ));
 
-  return { raw, fixes };
+  // What to draw lines for: every bearing of every round the filters touched.
+  //
+  // A round is the unit of geometry — two bearings that cross, or fail to — so
+  // it is drawn whole or not at all. Filtering to one observer used to hide the
+  // partner's bearing, leaving a fix sitting under a single line that could not
+  // have produced it. The observer filter picks which rounds to look at; it
+  // does not get to remove half the geometry of the ones it picked.
+  //
+  // Rounds are identified from the bearings rather than from the fixes,
+  // because a round that produced no fix has no fix row to be found by — and
+  // those are the rounds worth looking at hardest. Seeing two bearings run
+  // parallel is how a coordinator understands why nothing came of them.
+  const roundKey = (row) => `${row.group_id}|${row.pango_id}|${row.event_started_at || ''}`;
+  const rounds = new Set([...raw.map(roundKey), ...fixes.map(roundKey)]);
+  const geometry = state.raw.filter((r) => rounds.has(roundKey(r)));
+
+  return { raw, fixes, geometry };
 }
 
 // --- render ----------------------------------------------------------------
 
 function render() {
-  const { raw, fixes } = filtered();
+  const { raw, fixes, geometry } = filtered();
 
   const valid = fixes.filter((f) => isValidCoord(f.calc_lat, f.calc_lon));
   const invalid = fixes.filter((f) => !isValidCoord(f.calc_lat, f.calc_lon));
@@ -323,7 +376,7 @@ function render() {
   if (hasMap) {
     bearingLayer.clearLayers();
     fixLayer.clearLayers();
-    drawBearings(raw, valid);
+    drawBearings(geometry, valid);
     bounds = drawFixes(valid);
   }
   renderSidebar(valid, invalid);
@@ -331,8 +384,10 @@ function render() {
   $('status').replaceChildren();
   const status = document.createElement('span');
   status.innerHTML = '';
+  const orphans = fixesMissingBearings(valid, geometry);
   status.textContent = `${valid.length} fixes · ${raw.length} bearings`
     + (invalid.length ? ` · ${invalid.length} invalid` : '')
+    + (orphans.length ? ` · ${orphans.length} without bearings` : '')
     + (state.totals.fixes > fixes.length ? ` (of ${state.totals.fixes})` : '');
   $('status').appendChild(status);
 
@@ -395,6 +450,8 @@ function showOffscreenNotice() {
   );
 }
 
+const BEARING_COLOUR = '#2196a5';
+
 function drawBearings(raw, fixes) {
   raw.forEach((r) => {
     const lat = Number(r.obs_lat);
@@ -409,23 +466,66 @@ function drawBearings(raw, fixes) {
       : 2000;
 
     const bearing = Number(r.bearing_true ?? r.bearing);
-    L.polyline([[lat, lon], projectFrom(lat, lon, bearing, length)], {
-      color: '#2196a5', weight: 1.5, dashArray: '6,6', opacity: 0.7, interactive: false,
+    const reversed = fix ? !fixIsAhead(r, fix) : false;
+
+    // A reversed bearing is drawn backwards, towards the fix the solver
+    // actually used it for. Drawing it forwards is more faithful to what was
+    // written down but less honest about the result: the lines then cross
+    // nowhere, and the marker looks like a bug in the solve rather than what
+    // it is — a bearing taken off the back of the antenna. The dash and colour
+    // mark it as the suspect line.
+    const heading = reversed ? (bearing + 180) % 360 : bearing;
+    L.polyline([[lat, lon], projectFrom(lat, lon, heading, length)], {
+      color: reversed ? QUALITY_COLOUR.poor : BEARING_COLOUR,
+      weight: 1.5,
+      dashArray: reversed ? '2,5' : '6,6',
+      opacity: 0.7,
+      interactive: false,
     }).addTo(bearingLayer);
 
     L.circleMarker([lat, lon], {
-      radius: 5, color: '#2196a5', weight: 2, fillColor: '#fff', fillOpacity: 1,
+      radius: 5,
+      color: reversed ? QUALITY_COLOUR.poor : BEARING_COLOUR,
+      weight: 2,
+      fillColor: '#fff',
+      fillOpacity: 1,
     })
-      .bindPopup(observerPopup(r))
+      .bindPopup(observerPopup(r, reversed))
       .addTo(bearingLayer);
   });
 }
 
-function observerPopup(r) {
+/**
+ * Fixes on the map with none of their own bearings loaded.
+ *
+ * Nothing draws under them, which reads as a fix the app invented. Two causes:
+ * the bearings were deleted, or `/api/data` returned its most recent `limit`
+ * fixes and its most recent `limit` bearings independently, and the round's
+ * bearings fell off the older end. Saying so beats a silently empty map.
+ */
+function fixesMissingBearings(fixes, geometry) {
+  const key = (row) => `${row.group_id}|${row.pango_id}|${row.event_started_at || ''}`;
+  const have = new Set(
+    geometry
+      .filter((r) => isValidCoord(Number(r.obs_lat), Number(r.obs_lon)))
+      .map(key),
+  );
+  return fixes.filter((f) => !have.has(key(f)));
+}
+
+function observerPopup(r, reversed = false) {
   const wrap = document.createElement('div');
   const title = document.createElement('b');
   title.textContent = `Observer ${r.observer || '—'}`;
   wrap.appendChild(title);
+
+  if (reversed) {
+    const warn = document.createElement('div');
+    warn.style.color = QUALITY_COLOUR.poor;
+    warn.textContent = 'The fix lies behind this bearing — likely read 180° out. '
+      + 'Its line is drawn backwards, towards the fix.';
+    wrap.appendChild(warn);
+  }
 
   const lines = [
     `${r.pango_id} · ${r.group_id}`,
@@ -485,7 +585,11 @@ function fixPopup(fix, radius) {
     fix.crossing_angle_deg != null ? `Crossing angle ${fix.crossing_angle_deg.toFixed(0)}°` : null,
     fix.rms_error_m != null ? `RMS residual ${fix.rms_error_m.toFixed(0)} m` : 'Two-line fix — no residual',
     radius ? `Estimated uncertainty ±${Math.round(radius)} m` : null,
-    localTime(fix.timestamp),
+    // Both times, labelled. One number used to sit here unlabelled, and it was
+    // the moment the server solved the round — which a recalculation can move
+    // to a different day from the bearings it describes.
+    fix.event_started_at ? `Round ${localTime(fix.event_started_at)}` : null,
+    `Solved ${localTime(fix.timestamp)}`,
   ].filter(Boolean);
 
   lines.forEach((line) => {

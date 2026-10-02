@@ -201,6 +201,36 @@ async function computeLocalFix(animalId) {
   }
 }
 
+/**
+ * Judge the geometry of the round this reading would complete.
+ *
+ * Runs before the reading is filed, while the team is still standing there and
+ * can do something about it. The candidate is clustered in with the readings
+ * already held rather than simply appended, because it may start a new round
+ * (a long gap, or a station being reoccupied) — in which case there is nothing
+ * to cross it against yet and nothing to warn about.
+ */
+async function adviseForPending(animalId, candidate) {
+  if (!animalId) return null;
+
+  const held = (await store.all()).filter((r) => (
+    r.group_id === state.session.code && r.pango_id === animalId && !r.error
+  ));
+
+  const rounds = PangoRounds.clusterRounds([...held, candidate]);
+  const round = rounds.find((group) => group.some((r) => r.reading_id === candidate.reading_id));
+  if (!round) return null;
+
+  const readings = PangoRounds.distinctObservations(round);
+  if (readings.length < 2) return null;
+
+  return Triangulate.advise(readings.map((r) => ({
+    lat: r.lat,
+    lon: r.lon,
+    bearingTrue: r.bearing,
+  })));
+}
+
 // ---------------------------------------------------------------------------
 // Messages
 // ---------------------------------------------------------------------------
@@ -896,6 +926,14 @@ function readForm() {
   return { observer, lat, lon, bearing, problems };
 }
 
+// Short enough for a phone dialog heading; the body carries the detail.
+const GEOMETRY_TITLE = {
+  'same-spot': 'Both bearings from the same place',
+  'on-line': 'The animal is between the two of you',
+  'too-close': 'Not far enough apart',
+  shallow: 'These bearings barely cross',
+};
+
 async function saveReading() {
   const { observer, lat, lon, bearing, problems } = readForm();
 
@@ -939,6 +977,20 @@ async function saveReading() {
     accuracy,
     time: new Date().toISOString(),
   };
+
+  // The geometry check. Saving is never blocked — the team can see things this
+  // cannot, like the animal being close or a ridge in the way — but they hear
+  // about an unusable pairing now rather than from the dashboard tomorrow.
+  const advice = await adviseForPending(record.pango_id, record);
+  if (advice && !advice.ok) {
+    const note = Triangulate.moveNote(advice);
+    const proceed = await confirmDialog(
+      GEOMETRY_TITLE[advice.code] || 'These bearings may not cross',
+      note ? `${advice.message} ${note}` : advice.message,
+      'Save anyway',
+    );
+    if (!proceed) return;
+  }
 
   if (state.editingId) {
     await store.remove(state.editingId);

@@ -341,3 +341,58 @@ def test_api_data_paginates(field, coordinator):
     assert len(body["raw"]) == 1
     assert body["totals"]["raw"] == 2
     assert body["truncated"] is True
+
+
+# --- geometry advice on the upload path -------------------------------------
+
+
+def test_an_unusable_round_comes_back_with_advice_not_just_a_refusal(field):
+    """The server is the only place that sees both teams' bearings.
+
+    Each phone checks the geometry before it files a reading, but only against
+    the readings it holds — and the two teams carry separate phones under one
+    login, so the one taking the second bearing has usually never seen the
+    first. Without this, the pair's only warning arrives from the dashboard the
+    next day, by which time the animal has moved.
+
+    The geometry is B2BGYY / P15 from 1 October 2026: two stations 314 m apart,
+    each aiming within 3 degrees of the other because the animal was between
+    them. It crossed at 1 degree.
+    """
+    body = field.post("/sync", [
+        reading("S9", "P15", "BB", 21.880167, 79.579881, bearing=340.0, heading_ref="true"),
+        reading("S9", "P15", "TN", 21.882879, 79.578988, bearing=161.0, heading_ref="true"),
+    ]).get_json()
+
+    message = body["results"][0]["message"]
+    assert body["results"][0]["status"] == "failed"
+    # Why it cannot work, in terms the team can act on...
+    assert "between you" in message
+    # ...and what to do, which is not "move further apart".
+    assert "will not help" in message
+    assert "Walk about" in message
+
+
+def test_a_round_that_is_merely_close_together_gets_the_other_advice(field):
+    """Two teams 60 m apart, both aiming north at something far away.
+
+    NS2QQA / Leopard, 1 October 2026. This fails for a different reason from
+    the round above and needs the opposite remedy — spread out, rather than
+    turn sideways — so the two must not share a message.
+    """
+    body = field.post("/sync", [
+        reading("S8", "Leopard", "BB", 22.460568, 78.419074, bearing=2.0, heading_ref="true"),
+        reading("S8", "Leopard", "TN", 22.460622, 78.419650, bearing=1.0, heading_ref="true"),
+    ]).get_json()
+
+    message = body["results"][0]["message"]
+    assert body["results"][0]["status"] == "failed"
+    assert "apart" in message
+    assert "between you" not in message
+
+
+def test_good_geometry_still_reports_a_fix_and_no_advice(field):
+    body = field.post("/sync", two_good_bearings()).get_json()
+    result = body["results"][0]
+    assert result["status"] == "fixed"
+    assert "Walk about" not in result["message"]

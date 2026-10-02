@@ -36,6 +36,11 @@
   const MIN_USABLE_CROSSING_DEG = 10;
   const MAX_PLAUSIBLE_RANGE_M = 50000;
 
+  // Used only to explain a failure, never to predict one. See advise().
+  const MIN_OFFSET_DEG = 20;
+  const ADVISORY_SEPARATION_M = 150;
+  const MIN_HELPFUL_MOVE_M = 300;
+
   const POOR_CROSSING_DEG = 20;
   const FAIR_CROSSING_DEG = 35;
   const POOR_RMS_M = 100;
@@ -245,12 +250,176 @@
     };
   }
 
+  /** Smallest angle between two directions, folded into 0-90 degrees.
+   *
+   * Folding is what makes this about the *line* rather than the direction:
+   * standing 180 degrees behind the other team's aim is as useless as standing
+   * in front of it, because either way both bearings run along one line.
+   */
+  function acuteBetween(a, b) {
+    const delta = Math.abs((((a - b + 180) % 360) + 360) % 360 - 180);
+    return Math.min(delta, 180 - delta);
+  }
+
+  function widestPair(observations) {
+    let best = { a: observations[0], b: observations[1], baseline: 0 };
+    for (let i = 0; i < observations.length; i += 1) {
+      for (let j = i + 1; j < observations.length; j += 1) {
+        const a = observations[i];
+        const b = observations[j];
+        const baseline = distanceMetres(a.lat, a.lon, b.lat, b.lon);
+        if (baseline >= best.baseline) best = { a, b, baseline };
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Say whether this round's geometry can locate the animal, and what to do.
+   *
+   * Runs while the team is still standing there, which is the whole point. The
+   * solver's verdict is correct but arrives after both teams have packed up and
+   * the animal has moved; the same verdict before the reading is filed is
+   * something they can act on by walking fifty paces.
+   *
+   * Deliberately NOT a check on the position alone, before the bearing is
+   * taken. The crossing angle depends on the range to the animal as much as on
+   * the angle between the lines, and in this project's own data the animal sits
+   * about as far away as the teams are apart — where even a 2-degree offset
+   * still crosses steeply. Thresholding the angle in advance warned on 24
+   * rounds that produced a position, 8 of them good. Once the second bearing
+   * exists there is nothing left to assume. Kept in step with
+   * triangulation.advise().
+   *
+   * @param {Array<{lat:number, lon:number, bearingTrue:number}>} observations
+   */
+  function advise(observations) {
+    const obs = (observations || []).filter((o) => o);
+    if (obs.length < 2) {
+      return {
+        ok: true,
+        code: 'waiting',
+        message: "One bearing so far — the second observer's reading completes the round.",
+        crossingDeg: null,
+        baselineM: null,
+        moveBearingDeg: null,
+        moveMetres: null,
+      };
+    }
+
+    const { a, b, baseline } = widestPair(obs);
+    const across = (bearingDegrees(a.lat, a.lon, b.lat, b.lon) + 90) % 360;
+
+    if (baseline < MIN_BASELINE_M) {
+      return {
+        ok: false,
+        code: 'same-spot',
+        message: `All these bearings were taken within ${baseline.toFixed(0)} m of each other. `
+          + 'Lines that start from the same place cross at your own feet, not at the animal.',
+        crossingDeg: null,
+        baselineM: baseline,
+        moveBearingDeg: (a.bearingTrue + 90) % 360,
+        moveMetres: MIN_HELPFUL_MOVE_M,
+      };
+    }
+
+    let fix = null;
+    let failure = null;
+    try {
+      fix = solve(obs);
+    } catch (err) {
+      if (!(err instanceof TriangulationError)) throw err;
+      failure = err.message;
+    }
+
+    if (failure !== null) {
+      // Which of the two failure shapes this is. Both give a shallow crossing,
+      // and the remedy differs: one pair has to turn sideways, the other has
+      // to spread out.
+      const onLine = acuteBetween(a.bearingTrue, bearingDegrees(a.lat, a.lon, b.lat, b.lon));
+      if (onLine < MIN_OFFSET_DEG) {
+        return {
+          ok: false,
+          code: 'on-line',
+          message: `${failure} Both bearings run within ${onLine.toFixed(0)}° of the line between `
+            + 'the two positions, so the animal is roughly between you and the lines never cross. '
+            + 'Moving further apart along that line will not help; one of you has to step off it.',
+          crossingDeg: null,
+          baselineM: baseline,
+          moveBearingDeg: across,
+          moveMetres: Math.max(baseline, MIN_HELPFUL_MOVE_M),
+        };
+      }
+      if (baseline < ADVISORY_SEPARATION_M) {
+        return {
+          ok: false,
+          code: 'too-close',
+          message: `${failure} The two positions are only ${baseline.toFixed(0)} m apart, which is `
+            + 'not enough separation for an animal at this range — the lines stay nearly parallel.',
+          crossingDeg: null,
+          baselineM: baseline,
+          moveBearingDeg: across,
+          moveMetres: MIN_HELPFUL_MOVE_M,
+        };
+      }
+      return {
+        ok: false,
+        code: 'shallow',
+        message: failure,
+        crossingDeg: null,
+        baselineM: baseline,
+        moveBearingDeg: across,
+        moveMetres: Math.max(baseline, MIN_HELPFUL_MOVE_M),
+      };
+    }
+
+    if (fix.quality === 'poor') {
+      const detail = fix.reversedIndices.length
+        ? 'one bearing points away from the answer, which is what a 180° reading error looks '
+          + 'like — check that the signal gets weaker when you turn the antenna around'
+        : `they cross at only ${fix.crossingAngleDeg.toFixed(0)}°, so the position is smeared `
+          + 'along the line of sight';
+      return {
+        ok: false,
+        code: 'shallow',
+        message: `These bearings do give a position, but ${detail}.`,
+        crossingDeg: fix.crossingAngleDeg,
+        baselineM: baseline,
+        moveBearingDeg: across,
+        moveMetres: Math.max(baseline, MIN_HELPFUL_MOVE_M),
+      };
+    }
+
+    return {
+      ok: true,
+      code: 'ok',
+      message: `${obs.length} bearings crossing at ${fix.crossingAngleDeg.toFixed(0)}° from `
+        + `${baseline.toFixed(0)} m apart — ${fix.quality} geometry.`,
+      crossingDeg: fix.crossingAngleDeg,
+      baselineM: baseline,
+      moveBearingDeg: null,
+      moveMetres: null,
+    };
+  }
+
+  /** "Walk about 320 m on 253°", or empty when there is nothing to suggest. */
+  function moveNote(advice) {
+    if (!advice || advice.moveBearingDeg === null || advice.moveMetres === null) return '';
+    return `Walk about ${advice.moveMetres.toFixed(0)} m on ${advice.moveBearingDeg.toFixed(0)}°.`;
+  }
+
   return {
     solve,
+    advise,
+    moveNote,
+    acuteBetween,
     distanceMetres,
     bearingDegrees,
     TriangulationError,
     MIN_BASELINE_M,
     MIN_USABLE_CROSSING_DEG,
+    MIN_OFFSET_DEG,
+    ADVISORY_SEPARATION_M,
+    MIN_HELPFUL_MOVE_M,
   };
 }));
